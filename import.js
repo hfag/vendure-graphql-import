@@ -1,23 +1,156 @@
 const fs = require("fs");
+const Writable = require("stream").Writable;
+const util = require("util");
+const url = require("url");
+const path = require("path");
+const streamPipeline = util.promisify(require("stream").pipeline);
+
+const rimraf = require("rimraf");
+const fetch = require("node-fetch");
+const FormData = require("form-data");
 const readline = require("readline");
+const slugify = require("slugify");
 const _get = require("lodash/get");
 const parse = require("csv-parse/lib/sync");
-const { GraphQLClient } = require("graphql-request");
+const { GraphQLClient, rawRequest } = require("graphql-request");
+
+const SLUGIFY_OPTIONS = { lower: true, strict: true };
 
 if (process.argv.length !== 3) {
   console.error(
-    "Usage: node import.js path/to/file.csv or node import.js path/to/file.xls"
+    'Syntax: "node import.js path/to/file.csv" oder "node import.js path/to/file.xls"'
   );
   process.exit(0);
 }
 
+const mutableStdout = new Writable({
+  write: function (chunk, encoding, callback) {
+    if (!this.muted) process.stdout.write(chunk, encoding);
+    callback();
+  },
+});
+
 const rl = readline.createInterface({
   input: process.stdin,
-  output: process.stdout,
+  output: mutableStdout,
+  terminal: true,
 });
+
+rl._writeToOutput = function _writeToOutput(stringToWrite) {
+  if (rl.stdoutMuted) {
+    rl.output.write("*");
+  } else {
+    rl.output.write(stringToWrite);
+  }
+};
+
+async function downloadFile(fileUrl, fileDirectory) {
+  const response = await fetch(fileUrl);
+  const parsed = url.parse(fileUrl);
+
+  const f = `${fileDirectory}/${path.basename(parsed.pathname)}`;
+
+  if (!response.ok) {
+    throw new Error(`unexpected response ${response.statusText}`);
+  }
+  await streamPipeline(response.body, fs.createWriteStream(f));
+
+  return f;
+}
+
+async function uploadFilesToGraphql(endpoint, authenticationToken, filepaths) {
+  const body = new FormData();
+
+  body.append(
+    "operations",
+    JSON.stringify({
+      query: /* GraphQL */ `
+        mutation CreateAssets($input: [CreateAssetInput!]!) {
+          createAssets(input: $input) {
+            id
+            name
+          }
+        }
+      `,
+      variables: {
+        input: filepaths.map((filepath) => ({ file: null })),
+      },
+    })
+  );
+
+  body.append(
+    "map",
+    JSON.stringify(
+      filepaths.reduce((obj, filepath, index) => {
+        obj[index] = [`variables.input.${index}.file`];
+        return obj;
+      }, {})
+    )
+  );
+
+  filepaths.forEach((filepath, index) => {
+    body.append(index, fs.createReadStream(filepath));
+  });
+
+  return await fetch(endpoint, {
+    method: "POST",
+    body,
+    headers: new Headers({
+      Authorization: "Bearer " + authenticationToken,
+    }),
+  }).then((r) => r.json());
+}
 
 const rlQuestion = (question) =>
   new Promise((resolve, reject) => rl.question(question, resolve));
+const rlPasword = (question) =>
+  new Promise((resolve, reject) => {
+    mutableStdout.muted = false;
+    rl.question(question, (answer) => {
+      mutableStdout.muted = false;
+      resolve(answer);
+    });
+    mutableStdout.muted = true;
+  });
+
+const confirm = (question, defaultAnswer = "n") =>
+  new Promise((resolve, reject) => {
+    const defaultTrue = "y" === defaultAnswer;
+    const nonDefault = defaultTrue ? "n" : "y";
+
+    rl.question(
+      question + ` (${defaultTrue ? "Y" : "y"}/${!defaultTrue ? "N" : "n"}) `,
+      (answer) => {
+        if (answer.toLocaleLowerCase() === nonDefault) {
+          resolve(!defaultTrue);
+        } else {
+          resolve(defaultTrue);
+        }
+      }
+    );
+  });
+const assertConfirm = async (question, defaultAnswer) => {
+  if (await confirm(question, defaultAnswer)) {
+    return;
+  } else {
+    console.log("Nicht bestätigt, beende das Programm.");
+    process.exit();
+  }
+};
+
+const selection = async (options) => {
+  let answer = await rlQuestion(`Auswahl: `);
+  while (isNaN(answer) || answer < 0 || answer >= options.length) {
+    console.log(
+      `Diese Antwort ist ungültig. Wähle eine Zahl zwischen 0 und ${
+        options.length - 1
+      }`
+    );
+    answer = await rlQuestion(`Auswahl: `);
+  }
+
+  return options[answer];
+};
 
 const records = parse(fs.readFileSync(process.argv[2], { encoding: "utf-8" }), {
   columns: true,
@@ -28,13 +161,18 @@ const products = {};
 for (const record of records) {
   if (record["Typ"] === "variable") {
     if (record["Übergeordnetes Produkt"].length > 0) {
-      throw new Error("variable can't have a parent!");
+      console.error(record);
+      throw new Error(
+        "Ein variables Produkt kann kein übergeordnetes Produkt besitzen!"
+      );
     }
 
     products[record["Artikelnummer"]] = {
       sku: record["Artikelnummer"],
       name: record["Name"],
-      description: record["Beschreibung"],
+      description: record["Beschreibung"]
+        .replace(/<\/li>(\s)*\\n/g, "</li>")
+        .replace(/\\n/g, "<br>"),
       length: parseFloat(record["Länge (mm)"]) || 0,
       width: parseFloat(record["Breite (mm)"]) || 0,
       height: parseFloat(record["Höhe (mm)"]) || 0,
@@ -91,7 +229,8 @@ for (const record of records) {
       record["Übergeordnetes Produkt"].length === 0 ||
       !products[record["Übergeordnetes Produkt"]]
     ) {
-      throw new Error("variation must have a parent!");
+      console.log(record);
+      throw new Error("Produktvarianten benötigen ein übergeordnetes Produkt!");
     }
 
     const parent = record["Übergeordnetes Produkt"];
@@ -100,7 +239,7 @@ for (const record of records) {
       sku: record["Artikelnummer"],
       price: parseFloat(record["Regulärer Preis"]),
       images: record["Bilder"].split(",").map((x) => x.trim()),
-      minOrderQuantity: record["Meta: _feuerschutz_min_order_quantity"],
+      minimumOrderQuantity: record["Meta: _feuerschutz_min_order_quantity"],
       bulkDiscount: JSON.parse(
         record["Meta: _feuerschutz_bulk_discount"] || "[]"
       ),
@@ -143,325 +282,577 @@ for (const record of records) {
 
 // process.exit(0);
 
-const endpoint = "http://127.0.0.1:8000/graphql/";
+async function main() {
+  const endpoint = "http://localhost:3000/admin-api/";
 
-const graphQLClient = new GraphQLClient(endpoint, {
-  headers: {
-    authorization:
-      "JWT eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJlbWFpbCI6Im1lQHR5cmF0b3guY2giLCJleHAiOjE1ODU5OTA3MzgsIm9yaWdJYXQiOjE1ODU5OTA0Mzh9.1b9gjWUqCBS4Sp77qu2bX6aul98ETdMLu9O3lezrxqU",
-  },
-});
+  const username = await rlQuestion("Benutzername: ");
+  const password = await rlPasword("Passwort: ");
 
-const fetchAllPages = async (query, pagePath, batchSize = 100) => {
-  //all responses (without error) start with a wrapping data element
-  pagePath = "data." + pagePath;
+  const login = await rawRequest(
+    endpoint,
+    `mutation Login($username: String!, $password: String!){
+      login(username: $username, password: $password){
+        user{
+          identifier
+        }
+      }
+    }`,
+    {
+      username,
+      password,
+    }
+  );
 
-  let response = await graphQLClient.request(query(`first:${batchSize}`));
-  let page = _get(response, pagePath);
-
-  let data = page.edges.map((e) => e.node);
-
-  while (page.pageInfo.hasNextPage) {
-    response = await graphQLClient.request(
-      query(`first:${batchSize}, after:${page.pageInfo.endCursor}`)
-    );
-
-    page = _get(response, pagePath);
-    data = data.concat(page.edges.map((e) => e.node));
+  if (login.errors && login.errors.length > 0) {
+    console.log("Authentifikation fehlgeschlagen!");
+    console.error(login.errors);
+    process.exit(0);
   }
 
-  return data;
-};
+  const token = login.headers.get("vendure-auth-token");
 
-const productTypes = await fetchAllPages(
-  (pagination) =>
-    `query {
-      productTypes(${pagination}){
-        edges{
-          node{
-            id
-            name
-            variantAttributes{
-              name
-              values{
-                name
-              }
-            }
-          }
-        }
-        pageInfo{
-          hasNextPage
+  console.log(`Authentifikation erfolgreich! Token: ${token}`);
+
+  const graphQLClient = new GraphQLClient(endpoint, {
+    headers: {
+      authorization: `Bearer ${token}`,
+    },
+  });
+
+  const fetchAllPages = async (query, pagePath, batchSize = 100) => {
+    //all responses (without error) start with a wrapping data element
+    pagePath = "data." + pagePath;
+
+    let response = await graphQLClient.request(query(`first:${batchSize}`));
+    let page = _get(response, pagePath);
+
+    let data = page.edges.map((e) => e.node);
+
+    while (page.pageInfo.hasNextPage) {
+      response = await graphQLClient.request(
+        query(`first:${batchSize}, after:${page.pageInfo.endCursor}`)
+      );
+
+      page = _get(response, pagePath);
+      data = data.concat(page.edges.map((e) => e.node));
+    }
+
+    return data;
+  };
+
+  const hasAllOptionGroups = (variant, variants) => {
+    const v = variants.find((v) => v.sku === variant.sku);
+    const missingOptions = v.options.filter(
+      (o) =>
+        !variant.attributes.find(
+          (a) => o.code === slugify(a.value, SLUGIFY_OPTIONS)
+        )
+    );
+
+    return missingOptions.length === 0;
+  };
+
+  const existing = await graphQLClient.request(
+    `query GetProductsByGroupKeys($productGroupKeys: [String!]!){
+      getProductsByGroupKeys(productGroupKeys: $productGroupKeys){
+        id
+        customFields {
+          groupKey
         }
       }
     }`,
-  "productTypes"
-).sort((a, b) => a.name.localeCompare(b.name));
-
-const attributes = await fetchAllPages(
-  (pagination) =>
-    `query {
-      attributes(${pagination}){
-        edges{
-          node{
-            id
-            name
-            values{
-              id
-              name
-            }
-          }
-          cursor
-        }
-        pageInfo{
-          hasNextPage
-        }
-      }
-    }`,
-  "attributes"
-).sort((a, b) => a.name.localeCompare(b.name));
-
-async function createProducts() {
-  const productTypes = response.data.productTypes.edges.map(
-    (type) => type.node
+    { productGroupKeys: Object.keys(products) }
   );
+
+  const skuToProductId = {};
+  existing.getProductsByGroupKeys.forEach((p) => {
+    skuToProductId[p.customFields.groupKey] = p.id;
+  });
 
   for (const sku in products) {
     //we need to find a fitting product type
     const product = products[sku];
+    let productId = skuToProductId[sku];
+    let exists = productId ? true : false;
 
-    //first all are possible
-    let possibleTypes = productTypes.filter((type) => {
-      const unmatchedAttributes = product.attributes.filter(
-        (attribute) =>
-          !type.variantAttributes.find((e) => e.name === attribute.name)
+    let optionGroups = [];
+    const attributeNameToGroup = {};
+
+    if (exists) {
+      await assertConfirm(
+        `Produkt "${product.name}" (${product.sku}) existiert bereits und wird aktualisiert.`,
+        "y"
       );
 
-      return unmatchedAttributes.length === 0;
-    });
-
-    let type = null;
-
-    if (possibleTypes.length > 1) {
-      //find the number of the most matched attributes
-      const mostAttributes = possibleTypes.reduce((most, type) =>
-        type.variantAttributes.length > most
-          ? type.variantAttributes.length
-          : most
-      );
-
-      //filter all so that we only have the maximal matches
-      possibleTypes = possibleTypes.filter(
-        (type) => type.variantAttributes.length === mostAttributes
-      );
-    }
-
-    if (possibleTypes.length > 1) {
-      console.log(
-        `Es gibt mehrere mögliche Produkttypen für das Produkt mit Artikelnummer ${sku}`
-      );
-      console.log(`Möglich wären:`);
-      for (let i = 0; i < possibleTypes.length; i++) {
-        console.log(
-          `${i}) ${possibleTypes[i].name} mit Attributen ${possibleTypes[
-            i
-          ].variantAttributes
-            .map((a) => a.name)
-            .join(", ")}`
-        );
-      }
-
-      const num = await rlQuestion(
-        `Welcher Produkttyp soll verwendet werden? Gib seine Nummer(0-${
-          possibleTypes.length - 1
-        }) ein. Etwas anderes um abzubrechen.`
-      );
-
-      const selection = parseInt(num);
-
-      if (
-        isNaN(selection) ||
-        selection < 0 ||
-        selection >= possibleTypes.length
-      ) {
-        console.log("Import abgebrochen.");
-        process.exit(0);
-      }
-
-      type = possibleTypes[selection];
-    } else if (possibleTypes.length === 1) {
-      type = possibleTypes[0];
-    } else if (possibleTypes.length === 0) {
-      console.log(
-        `Es wurde kein Typ mit den Attributen ${product.attributes.map(
-          (a) => a.name
-        )} gefunden.`
-      );
-      const input = await rlQuestion(
-        `Soll ein Produkttyp mit diesen Attributen erstellt werden? Weitere Eigenschaftswerte können später hinzugefügt werden. (y/n)`
-      );
-      if (input.toLowerCase() !== "y") {
-        console.log(
-          "Import abgebrochen. Erstelle den Produkttyp manuell und versuche es dann erneut."
-        );
-        process.exit(0);
-      }
-
-      const name = await rlQuestion(
-        `Wie soll die neue Variante mit den Attributen ${product.attributes
-          .map((a) => a.name)
-          .join(", ")} genannt werden?`
-      );
-      const isDigital =
-        (
-          await rlQuestion(`Ist das Produkt ausschliesslich digital (y/n)?`)
-        ).toLowerCase() === "y";
-
-      //const taxCode = (await rlQuestion(`Steuercode?`)).toLowerCase() === "y";
-
-      //create product attributes if needed, first filter the ones that already exist
-      const newAttributes = product.attributes.filter(
-        (a1) => !attributes.find((a2) => a1.name === a2.name)
-      );
-      console.log(
-        `Bisher sind folgende Attribute in der Datenbank: ${attributes
-          .map((a) => a.name)
-          .join(", ")}`
-      );
-      const shouldCreateAttributes =
-        (await rlQuestion(
-          `Die Attribute ${newAttributes
-            .map((a) => a.name)
-            .join(", ")} müssten erstellt werden, ist das in Ordnung? (y/n)`
-        ).toLowerCase()) === "y";
-
-      if (!shouldCreateAttributes) {
-        console.log(
-          "Import abgebrochen. Erstelle die Attribute mit diesen Namen manuell und versuche es dann erneut."
-        );
-        process.exit(0);
-      }
-
-      for (const attribute of newAttributes) {
-        const response = await graphQLClient.request(
-          `mutation AttributeCreate($input: AttributeCreateInput!){
-            attributeCreate(input: $input){
-              attribute{
-                id
-                name,
-                values {
-                  id
-                  name
-                }
-              }
-            }
-          }`,
-          {
-            input: {
-              inputType: "DROPDOWN",
-              name: attribute.name,
-              values: product.values.map((name) => ({ name })),
-              valueRequired: true,
-              isVariantOnly: true,
-              visibleInStorefront: true,
-              filterableInStorefront: true,
-              filterableInDashboard: true,
-              availableInGrid: true,
-            },
-          }
-        );
-
-        attributes.push(response.data.attributeCreate.attribute);
-      }
-
-      console.log(
-        "Die neuen Attribute wurden erstellt, erstelle nun die Produktvariante."
-      );
-
-      const productTypeCreationResponse = await graphQLClient.request(
-        `mutation ProductTypeCreate(input: ProductTypeInput!){
-          productTypeCreate(input: $input){
-            productType{
-              id
-            }
+      const productCreationResponse = await graphQLClient.request(
+        `mutation UpdateProduct($input: UpdateProductInput!){
+          updateProduct(input: $input){
+            id
           }
         }`,
         {
           input: {
-            name,
-            hasVariants: true,
-            productAttributes: [],
-            variantAttributes: product.attributes //now attributes contains all of them
-              .map((a1) => {
-                const a = attributes.find((a2) => a1.name === a2.name);
-                return a ? a.id : null;
-              })
-              .filter((e) => e) /*filter null values*/,
-            isShippingRequired: !isDigital,
-            isDigital,
+            id: productId,
+            enabled: true,
+            featuredAssetId: null,
+            assetIds: [],
+            facetValueIds: [],
+            translations: ["en", "de"].map((lang) => ({
+              languageCode: lang,
+              name: product.name,
+              slug: slugify(product.name, SLUGIFY_OPTIONS),
+              description: product.description,
+            })),
+            customFields: {
+              productRecommendationsEnabled: false,
+              groupKey: sku,
+            },
           },
         }
       );
 
-      type = productTypeCreationResponse.data.productTypeCreate.productType;
+      const optionGroupsResponse = await graphQLClient.request(
+        `query optionGroups($productId: ID!){
+          product(id: $productId){
+            optionGroups{
+              id
+              name
+              code
+              options{
+                id
+                name
+                code
+              }
+            }
+          }
+        }`,
+        {
+          productId,
+        }
+      );
+
+      optionGroups = optionGroupsResponse.product.optionGroups;
+    } else {
+      await assertConfirm(
+        `Produkt "${product.name}" (${product.sku}) existiert noch nicht und wird neu erstellt.`
+      );
+
+      console.log(
+        `Es werden ${product.images.length} Bilder herunter- und dann wieder hochgeladen falls diese noch vorhanden sind.`
+      );
+
+      if (!fs.existsSync("./tmp/")) {
+        fs.mkdirSync("./tmp");
+      } else {
+        rimraf.sync("./tmp/*");
+      }
+
+      const downloads = (
+        await Promise.all(
+          product.images.map((url) =>
+            downloadFile(url, "./tmp").catch(
+              (e) => {
+                console.error(e);
+                return null;
+              } /* ignore errors */
+            )
+          )
+        )
+      ).filter((e) => e);
+
+      console.log(
+        `${downloads.length} von ${product.images.length} Bilder heruntergeladen. Lade sie nun hoch...`
+      );
+      const uploadResponse = await uploadFilesToGraphql(
+        endpoint,
+        token,
+        downloads
+      );
+
+      rimraf.sync("./tmp/*");
+
+      const assetIds = uploadResponse.data.createAssets.map((a) => a.id);
+
+      //create product
+      const productCreationResponse = await graphQLClient.request(
+        `mutation CreateProduct($input: CreateProductInput!){
+          createProduct(input: $input){
+            id
+          }
+        }`,
+        {
+          input: {
+            featuredAssetId: assetIds[0],
+            assetIds,
+            facetValueIds: [],
+            translations: ["en", "de"].map((lang) => ({
+              languageCode: lang,
+              name: product.name,
+              slug: slugify(product.name, SLUGIFY_OPTIONS),
+              description: product.description,
+            })),
+            customFields: {
+              productRecommendationsEnabled: false,
+              groupKey: sku,
+            },
+          },
+        }
+      );
+
+      skuToProductId[sku] = productCreationResponse.createProduct.id;
+
+      exists = true;
+      productId = skuToProductId[sku];
     }
 
-    //create product
+    for (const attribute of product.attributes) {
+      const slug = slugify(attribute.name, SLUGIFY_OPTIONS);
+      const groups = optionGroups.filter((g) => g.code === slug);
+      let group = groups[0];
+      if (groups.length === 0) {
+        if (
+          await confirm(
+            `Es existiert bisher kein Attribut mit dem Namen "${slug}, soll es erstellt werden?"`,
+            "y"
+          )
+        ) {
+          const productOptionGroupCreationResponse = await graphQLClient.request(
+            `mutation CreateProductOptionGroup($input: CreateProductOptionGroupInput!){
+              createProductOptionGroup(input: $input){
+                id
+                code
+                name
+                options{
+                  id
+                  name
+                  code
+                }
+              }
+            }`,
+            {
+              input: {
+                code: slug,
+                translations: ["en", "de"].map((lang) => ({
+                  languageCode: lang,
+                  name: attribute.name,
+                })),
+                options: attribute.values.map((v) => ({
+                  code: slugify(v, SLUGIFY_OPTIONS),
+                  translations: ["en", "de"].map((lang) => ({
+                    languageCode: lang,
+                    name: v,
+                  })),
+                })),
+              },
+            }
+          );
 
-    const productCreationResponse = await graphQLClient.request(
-      `mutation ProductCreate(input: ProductInput!){
-        productCreate(input: $input){
-          product{
+          group = productOptionGroupCreationResponse.createProductOptionGroup;
+
+          const productOptionGroupAssignmentResponse = await graphQLClient.request(
+            `mutation AddOptionGroupToProduct($productId: ID!, $optionGroupId: ID!){
+              addOptionGroupToProduct(productId: $productId, optionGroupId: $optionGroupId){
+                id
+              }
+            }`,
+            {
+              productId,
+              optionGroupId: group.id,
+            }
+          );
+        } else {
+          await assertConfirm(
+            `Oder soll stattdessen ein anderes Attribut verwendet werden?`,
+            "n"
+          );
+          optionGroups.forEach((g, i) =>
+            console.log(
+              `${i}) ${g.name} (${g.code}) mit den Werten [${g.options
+                .map((o) => o.name)
+                .join(", ")}]`
+            )
+          );
+
+          group = await selection(optionGroups);
+        }
+      } else if (groups.length > 1) {
+        console.log(`Es existieren mehrere Attribute mit dem Namen "${slug}".`);
+        console.log(
+          `Welchem soll das Produktattribut "${attribute.name}" von ${
+            product.name
+          } (${product.sku}) zugeordnet werden? (0-${groups.length - 1})`
+        );
+        console.log(
+          `Folgende Attributwerte werden benötigt: [${attribute.values.join(
+            ", "
+          )}]\n`
+        );
+        groups.forEach((g, i) =>
+          console.log(
+            `\t${i}) "${g.name}" (${g.code}) mit den Werten [${g.options
+              .map((o) => o.name)
+              .join(", ")}]`
+          )
+        );
+
+        group = await selection(groups);
+      }
+
+      const missingValues = attribute.values.filter(
+        (v) =>
+          !group.options.find((o) => o.code === slugify(v, SLUGIFY_OPTIONS))
+      );
+
+      console.log(
+        `Erstelle ${missingValues.length} neue Werte im Attribut ${
+          attribute.name
+        }: [${missingValues.join(", ")}]`
+      );
+
+      const productOptionGroupCreationResponses = await Promise.all(
+        missingValues.map((value) =>
+          graphQLClient.request(
+            `mutation createProductOption($input: CreateProductOptionInput!){
+              CreateProductOption(input: $input){
+                id
+                code
+                name
+              }
+            }`,
+            {
+              input: {
+                productOptionGroupId: group.id,
+                code: slugify(value, SLUGIFY_OPTIONS),
+                translations: ["en", "de"].map((lang) => ({
+                  languageCode: lang,
+                  name: value,
+                })),
+              },
+            }
+          )
+        )
+      );
+
+      attributeNameToGroup[attribute.name] = group;
+    }
+
+    const existingVariants = await graphQLClient.request(
+      `query ProductVariants($id: ID!){
+        product(id: $id){
+          variants{
             id
+            sku
+            options{
+              id
+              code
+              name
+              groupId
+            }
           }
         }
       }`,
-      {
-        input: {
-          attributes: [],
-          publicationDate: new Date().toISOString(),
-          category: xxx,
-          chargeTaxes: true,
-          collections: [],
-          description: "",
-          isPublished: true,
-          name: product.name,
-          basePrice: 0.0,
-          seo: {
-            title: product.seoTitle,
-            description: product.seoDescription,
-          },
-          sku: product.sku,
+      { id: productId }
+    );
+
+    const variantSkuToId = {};
+
+    existingVariants.product.variants.forEach((v) => {
+      variantSkuToId[v.sku] = v.id;
+    });
+
+    const variantsToDelete = existingVariants.product.variants
+      .filter((v) => !product.children.find((p) => p.sku === v.sku))
+      .map((v) => v.id);
+
+    const variantUpdates = [];
+    const variantCreations = [];
+    const variantBulkDiscounts = [];
+
+    for (const variant of product.children) {
+      let variantId = variantSkuToId[variant.sku];
+      let exists = variantId ? true : false;
+
+      if (
+        exists &&
+        hasAllOptionGroups(variant, existingVariants.product.variants)
+      ) {
+        variantUpdates.push({
+          id: variantId,
+          translations: ["en", "de"].map((lang) => ({
+            languageCode: lang,
+            name: product.name,
+          })),
+          facetValueIds: [],
+          sku: variant.sku,
+          price: variant.price,
+          taxCategoryId: 1,
+          featuredAssetId: null,
+          assetIds: [],
+          // stockOnHand: null,
           trackInventory: false,
-          productType: type.id,
-        },
+          customFields: {
+            bulkDiscountEnabled: variant.bulkDiscount.length > 0,
+            minimumOrderQuantity: 0,
+          },
+        });
+      } else {
+        //option groups don't match, delete it and create new one
+        if (exists) {
+          variantsToDelete.push(variantId);
+        }
+
+        if (!fs.existsSync("./tmp/")) {
+          fs.mkdirSync("./tmp");
+        } else {
+          rimraf.sync("./tmp/*");
+        }
+
+        const downloads = (
+          await Promise.all(
+            variant.images.map((url) =>
+              downloadFile(url, "./tmp").catch(
+                (e) => {
+                  console.error(e);
+                  return null;
+                } /* ignore errors */
+              )
+            )
+          )
+        ).filter((e) => e);
+
+        const uploadResponse = await uploadFilesToGraphql(
+          endpoint,
+          token,
+          downloads
+        );
+
+        rimraf.sync("./tmp/*");
+
+        const assetIds = uploadResponse.data.createAssets.map((a) => a.id);
+
+        variantCreations.push({
+          productId,
+          translations: ["en", "de"].map((lang) => ({
+            languageCode: lang,
+            name: product.name,
+          })),
+          facetValueIds: [],
+          sku: variant.sku,
+          price: variant.price,
+          taxCategoryId: 1,
+          optionIds: variant.attributes
+            .map(({ name, value }) => {
+              const slug = slugify(value, SLUGIFY_OPTIONS);
+              const group = attributeNameToGroup[name].options.find(
+                ({ name, code }) => code === slug
+              );
+
+              return group ? group.id : null;
+            })
+            .filter((e) => e),
+          featuredAssetId: assetIds[0],
+          assetIds,
+          // stockOnHand: null,
+          trackInventory: false,
+          customFields: {
+            bulkDiscountEnabled: variant.bulkDiscount.length > 0,
+            minimumOrderQuantity: 0,
+          },
+        });
+      }
+
+      variantBulkDiscounts.push({
+        sku: variant.sku,
+        discounts: variant.bulkDiscount.map((d) => ({
+          quantity: d.qty,
+          price: d.ppu,
+        })),
+      });
+    }
+
+    console.log(
+      `Lösche ${variantsToDelete.length} Produktvarianten von ${product.name} (${product.sku}):`
+    );
+
+    const DeleteVariants = await Promise.all(
+      variantsToDelete.map((variantId) =>
+        graphQLClient.request(
+          `mutation DeleteProductVariant($id: ID!){
+            deleteProductVariant(id: $id){
+              result
+              message
+            }
+          }`,
+          {
+            id: variantId,
+          }
+        )
+      )
+    );
+
+    console.log(
+      `Erstelle ${variantCreations.length} neue Produktvarianten für das Produkt ${product.sku}:`
+    );
+    console.log(
+      "Artikelnummern: " + variantCreations.map((c) => c.sku).join(", ")
+    );
+
+    const createProductVariantsResponse = await graphQLClient.request(
+      `mutation CreateProductVariants($input: [CreateProductVariantInput!]!){
+        createProductVariants(input: $input){
+          id
+          sku
+        }
+      }`,
+      {
+        input: variantCreations,
       }
     );
 
-    const productId = productCreationResponse.data.productCreate.product.id;
+    createProductVariantsResponse.createProductVariants.forEach((v) => {
+      variantSkuToId[v.sku] = v.id;
+    });
 
-    for (const variant of product.children) {
-      const productVariantCreationResponse = await graphQLClient.request(
-        `mutation ProductVariantCreate(input: ProductVariantInput!){
-          productVariantCreate(input: $input){
-            productVariant{
-              id
-            }
-          }
-        }`,
-        {
-          input: {
-            attributes: [],
-            priceOverride: variant.price,
-            sku: variant.sku,
-            trackInventory: false,
-            product: productId,
-          },
+    console.log(
+      `Aktualisiere ${variantUpdates.length} Produktvarianten für das Produkt ${product.sku}:`
+    );
+    console.log("SKUs: " + variantUpdates.map((c) => c.sku).join(", "));
+
+    const updateProductVariantsResponse = await graphQLClient.request(
+      `mutation UpdateProductVariants($input: [UpdateProductVariantInput!]!){
+        updateProductVariants(input: $input){
+          id
+          sku
         }
-      );
-    }
+      }`,
+      {
+        input: variantUpdates,
+      }
+    );
+
+    console.log(
+      `Aktualisiere die Mengenrabatte für alle erstellten und aktualisierten Produktvarianten`
+    );
+
+    const UpdateProductVariantsBulkDicounts = await Promise.all(
+      variantBulkDiscounts.map(({ sku, discounts }) =>
+        graphQLClient.request(
+          `mutation UpdateProductVariantBulkDicounts($productVariantId: ID!, $discounts: [BulkDiscountInput!]!){
+            updateProductVariantBulkDiscounts(productVariantId: $productVariantId, discounts: $discounts)
+          }`,
+          {
+            productVariantId: variantSkuToId[sku],
+            discounts,
+          }
+        )
+      )
+    );
   }
 
   console.log(JSON.stringify(data, undefined, 2));
 }
 
-createProducts().catch((error) => console.error(error));
+main().catch((error) => {
+  console.error(error);
+  process.exit();
+});
