@@ -1,11 +1,20 @@
 {
+  "scripts": {
+    "start": "ts-node import.ts"
+  },
   "dependencies": {
+    "@types/form-data": "^2.5.0",
+    "@types/node": "^14.0.4",
+    "@types/node-fetch": "^2.5.7",
+    "@types/rimraf": "^3.0.0",
     "csv": "^5.3.2",
     "form-data": "^3.0.0",
     "graphql-request": "^1.8.2",
     "lodash": "^4.17.15",
     "node-fetch": "^2.6.0",
     "rimraf": "^3.0.2",
-    "slugify": "^1.4.0"
+    "slugify": "^1.4.0",
+    "ts-node": "^8.10.1",
+    "typescript": "^3.9.3"
   }
 }
