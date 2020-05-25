@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import slugify from "slugify";
 import parse from "csv-parse/lib/sync";
+import XLSX from "xlsx";
 import { GraphQLClient } from "graphql-request";
 
 import {
@@ -32,32 +33,60 @@ import {
   createCategoryCollections,
   findOrCreateFacetValues,
   findOrCreateFacet,
+  updateProductCrosssells,
+  updateProductUpsells,
 } from "./graphql-utils";
 import {
   SLUGIFY_OPTIONS,
   hasAllOptionGroups,
   mapWoocommerceRecordsToProducts,
+  excelToProducts,
 } from "./data-utils";
 import { downloadFile, cleanDownloads, downloadFiles, notEmpty } from "./utils";
 import {
   OptionGroup,
   ProductVariantCreation,
   ProductVariantUpdate,
+  Product,
 } from "./types";
 
-if (process.argv.length !== 3) {
+if (process.argv.length < 3) {
   console.error(
     'Syntax: "node import.js path/to/file.csv" oder "node import.js path/to/file.xls"'
   );
   process.exit(0);
 }
 
-const records = parse(fs.readFileSync(process.argv[2], { encoding: "utf-8" }), {
-  columns: true,
-  skip_empty_lines: true,
-});
+let products: { [productGroupKey: string]: Product } = {};
 
-const products = mapWoocommerceRecordsToProducts(records);
+if (process.argv[2].endsWith(".csv")) {
+  console.log("Importiere aus CSV");
+  const records = parse(
+    fs.readFileSync(process.argv[2], { encoding: "utf-8" }),
+    {
+      columns: true,
+      skip_empty_lines: true,
+    }
+  );
+
+  products = mapWoocommerceRecordsToProducts(records);
+} else if (process.argv[2].endsWith(".xlsx")) {
+  console.log("Importiere aus Excel-Datei");
+  products = excelToProducts(XLSX.readFile(process.argv[2]));
+} else if (process.argv[2].endsWith(".json")) {
+  console.log("Importiere aus JSON-Datei");
+  products = JSON.parse(
+    fs.readFileSync(process.argv[2], { encoding: "utf-8" })
+  );
+} else {
+  throw new Error("Entweder .csv, .json .xlsx Dateien!");
+}
+
+if (process.argv.length >= 4 && process.argv[3].endsWith(".json")) {
+  console.log("Schreibe JSON Ausgabe: " + process.argv[3]);
+  fs.writeFileSync(process.argv[3], JSON.stringify(products));
+  process.exit(0);
+}
 
 async function main() {
   const endpoint = "http://localhost:3000/admin-api/";
@@ -81,6 +110,10 @@ async function main() {
   );
 
   const collections = await getCollections(graphQLClient);
+
+  console.log(
+    `Importiere insgesamt ${Object.values(products).length} Produkte.`
+  );
 
   for (const sku in products) {
     //we need to find a fitting product type
@@ -330,7 +363,7 @@ async function main() {
           })),
           facetValueIds: [],
           sku: variant.sku,
-          price: variant.price,
+          price: variant.price * 100 /* weird but that's just how it is */,
           taxCategoryId: 1,
           optionIds: variant.attributes
             .map(({ name, value }) => {
@@ -400,6 +433,33 @@ async function main() {
       }))
     );
   }
+
+  console.log("Füge nun noch die Verlinkungen (Cross- und Upsells) ein.");
+
+  const crosssells: { productId: string; productIds: string[] }[] = [];
+  const upsells: { productId: string; productIds: string[] }[] = [];
+
+  for (const sku in products) {
+    //we need to find a fitting product type
+    const product = products[sku];
+    if (product.crosssells.length > 0) {
+      crosssells.push({
+        productId: skuToProductId[sku],
+        productIds: product.crosssells.map((sku) => skuToProductId[sku]),
+      });
+    }
+    if (product.upsells.length > 0) {
+      upsells.push({
+        productId: skuToProductId[sku],
+        productIds: product.upsells.map((sku) => skuToProductId[sku]),
+      });
+    }
+  }
+
+  await Promise.all([
+    updateProductCrosssells(graphQLClient, crosssells),
+    updateProductUpsells(graphQLClient, upsells),
+  ]);
 }
 
 main().catch((error) => {

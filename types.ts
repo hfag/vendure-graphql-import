@@ -70,12 +70,12 @@ export type Product = {
   order: number;
   attributes: Facet[];
   facets: Facet[];
-  seoTitle: string;
-  seoDescription: string;
   minOrderQuantity: number;
   bulkDiscount: boolean;
+  discountGroups: string[];
   children: ProductVariant[];
 };
+
 export type ProductVariant = {
   sku: string;
   price: number;

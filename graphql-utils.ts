@@ -694,3 +694,47 @@ export const updateProductVariantBulkDiscounts = async (
     )
   );
 };
+
+export const updateProductCrosssells = async (
+  graphQLClient: GraphQLClient,
+  crosssells: {
+    productId: string;
+    productIds: string[];
+  }[]
+) => {
+  const response = await Promise.all(
+    crosssells.map(({ productId, productIds }) =>
+      graphQLClient.request(
+        `mutation UpdateCrossSellingProducts($productId: ID!, $productIds: [ID!]!){
+          updateCrossSellingProducts(productId: $productId, productIds: $productIds)
+        }`,
+        {
+          productId,
+          productIds,
+        }
+      )
+    )
+  );
+};
+
+export const updateProductUpsells = async (
+  graphQLClient: GraphQLClient,
+  upsells: {
+    productId: string;
+    productIds: string[];
+  }[]
+) => {
+  const response = await Promise.all(
+    upsells.map(({ productId, productIds }) =>
+      graphQLClient.request(
+        `mutation UpdateUpSellingProducts($productId: ID!, $productIds: [ID!]!){
+          updateUpSellingProducts(productId: $productId, productIds: $productIds)
+        }`,
+        {
+          productId,
+          productIds,
+        }
+      )
+    )
+  );
+};
