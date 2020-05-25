@@ -50,9 +50,9 @@ import {
   Product,
 } from "./types";
 
-if (process.argv.length < 3) {
+if (process.argv.length < 4) {
   console.error(
-    'Syntax: "node import.js path/to/file.csv" oder "node import.js path/to/file.xls"'
+    'Syntax: "node import.js path/to/file.ext https://vendure-domain.tld/admin-api" oder "node import.js path/to/file.ext path/to/out.json"'
   );
   process.exit(0);
 }
@@ -82,14 +82,14 @@ if (process.argv[2].endsWith(".csv")) {
   throw new Error("Entweder .csv, .json .xlsx Dateien!");
 }
 
-if (process.argv.length >= 4 && process.argv[3].endsWith(".json")) {
+if (process.argv[3].endsWith(".json")) {
   console.log("Schreibe JSON Ausgabe: " + process.argv[3]);
   fs.writeFileSync(process.argv[3], JSON.stringify(products));
   process.exit(0);
 }
 
 async function main() {
-  const endpoint = "http://localhost:3000/admin-api/";
+  const endpoint = process.argv[3];
 
   const username = await rlQuestion("Benutzername: ");
   const password = await rlPasword("Passwort: ");
