@@ -10,6 +10,7 @@ import {
   Facet,
   ProductVariantCreation,
   ProductVariantUpdate,
+  AttributeFacet,
 } from "./types";
 
 export const uploadFilesToGraphql = async (
@@ -132,7 +133,7 @@ export const createCategoryCollections = async (
           {
             input: {
               isPrivate: false,
-              translations: ["en", "de"].map((lang) => ({
+              translations: ["de"].map((lang) => ({
                 languageCode: lang,
                 name: collection.name,
                 description: "",
@@ -247,7 +248,7 @@ export const createFacetValues = async (
       input: values.map((v) => ({
         facetId,
         code: slugify(v, SLUGIFY_OPTIONS),
-        translations: ["en", "de"].map((lang) => ({
+        translations: ["de"].map((lang) => ({
           languageCode: lang,
           name: v,
         })),
@@ -260,8 +261,7 @@ export const createFacetValues = async (
 
 export const findOrCreateFacet = async (
   graphQLClient: GraphQLClient,
-  facetName: string,
-  input: string[]
+  facet: Facet | AttributeFacet
 ) => {
   const searchResponse: {
     facets: {
@@ -278,11 +278,14 @@ export const findOrCreateFacet = async (
       }`
   );
 
-  const facet = searchResponse.facets.items.find(
-    (f) => f.code === slugify(facetName, SLUGIFY_OPTIONS)
+  const f = searchResponse.facets.items.find(
+    (f) =>
+      f.code ===
+      ("code" in facet ? facet.code : slugify(facet.name, SLUGIFY_OPTIONS))
   );
-  if (facet) {
-    return findOrCreateFacetValues(graphQLClient, facet.id, input);
+
+  if (f) {
+    return findOrCreateFacetValues(graphQLClient, f.id, facet.values);
   } else {
     const response: {
       createFacet: {
@@ -303,15 +306,16 @@ export const findOrCreateFacet = async (
         }`,
       {
         input: {
-          code: slugify(facetName, SLUGIFY_OPTIONS),
+          code:
+            "code" in facet ? facet.code : slugify(facet.name, SLUGIFY_OPTIONS),
           isPrivate: false,
-          translations: ["en", "de"].map((lang) => ({
+          translations: ["de"].map((lang) => ({
             languageCode: lang,
-            name: facetName,
+            name: "name" in facet ? facet.name : facet.code,
           })),
-          values: input.map((v) => ({
+          values: facet.values.map((v) => ({
             code: slugify(v, SLUGIFY_OPTIONS),
-            translations: ["en", "de"].map((lang) => ({
+            translations: ["de"].map((lang) => ({
               languageCode: lang,
               name: v,
             })),
@@ -382,7 +386,7 @@ export const createProduct = async (
         featuredAssetId: assetIds[0],
         assetIds,
         facetValueIds,
-        translations: ["en", "de"].map((lang) => ({
+        translations: ["de"].map((lang) => ({
           languageCode: lang,
           name: product.name,
           slug: slugify(product.name, SLUGIFY_OPTIONS),
@@ -419,7 +423,7 @@ export const updateProduct = async (
         /*featuredAssetId: null,
         assetIds: [],*/
         facetValueIds,
-        translations: ["en", "de"].map((lang) => ({
+        translations: ["de"].map((lang) => ({
           languageCode: lang,
           name: product.name,
           slug: slugify(product.name, SLUGIFY_OPTIONS),
@@ -473,7 +477,7 @@ export const getOptionGroupsByProductId = async (
 export const createOptionGroup = async (
   graphQLClient: GraphQLClient,
   slug: string,
-  attribute: Facet
+  attribute: AttributeFacet
 ): Promise<OptionGroup> => {
   const response: {
     createProductOptionGroup: {
@@ -498,13 +502,13 @@ export const createOptionGroup = async (
     {
       input: {
         code: slug,
-        translations: ["en", "de"].map((lang) => ({
+        translations: ["de"].map((lang) => ({
           languageCode: lang,
           name: attribute.name,
         })),
         options: attribute.values.map((v) => ({
           code: slugify(v, SLUGIFY_OPTIONS),
-          translations: ["en", "de"].map((lang) => ({
+          translations: ["de"].map((lang) => ({
             languageCode: lang,
             name: v,
           })),
@@ -555,7 +559,7 @@ export const createProductOptions = async (
           input: {
             productOptionGroupId: optionGroupId,
             code: slugify(value, SLUGIFY_OPTIONS),
-            translations: ["en", "de"].map((lang) => ({
+            translations: ["de"].map((lang) => ({
               languageCode: lang,
               name: value,
             })),

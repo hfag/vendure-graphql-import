@@ -1,8 +1,16 @@
 import slugify from "slugify";
 import XLSX from "xlsx";
-import { WoocommerceRecord, Product, ProductVariant, Facet } from "./types";
+import {
+  WoocommerceRecord,
+  Product,
+  ProductVariant,
+  AttributeFacet,
+  Facet,
+} from "./types";
 
 export const SLUGIFY_OPTIONS = { lower: true, strict: true };
+
+export const RESELLER_DISCOUNT_FACET_CODE = "reseller-discount";
 
 interface AttributeMeta {
   name: string;
@@ -192,7 +200,6 @@ export const mapWoocommerceRecordToProduct = (
     record["Meta: _feuerschutz_variable_bulk_discount_enabled"] === "1"
       ? true
       : false,
-  discountGroups: [],
   children: [],
 });
 
@@ -415,19 +422,29 @@ export const excelToProducts = (workbook: XLSX.WorkBook) => {
             const groupName: string = productData["Produktgruppe_Shop"].trim();
 
             if (!(groupName in products)) {
-              const attributes: Facet[] = EXCEL_ATTRIBUTES.filter(
+              const attributes: AttributeFacet[] = EXCEL_ATTRIBUTES.filter(
                 ({ columnKey }) => columnKey in productData
               ).map((attribute) => ({
                 name: attribute.name,
                 values: [productData[attribute.columnKey]],
               }));
 
-              const discountGroups = [];
+              const facets: Facet[] = [];
 
               //Check for discount keys
               for (let column in productData) {
                 if (column.indexOf("_Rabattberechtigt") !== -1) {
-                  discountGroups.push(column.replace("_Rabattberechtigt", ""));
+                  const f = facets.find(
+                    (f) => f.code === RESELLER_DISCOUNT_FACET_CODE
+                  );
+                  if (f) {
+                    f.values.push(column.replace("_Rabattberechtigt", ""));
+                  } else {
+                    facets.push({
+                      code: RESELLER_DISCOUNT_FACET_CODE,
+                      values: [column.replace("_Rabattberechtigt", "")],
+                    });
+                  }
                 }
               }
 
@@ -444,12 +461,11 @@ export const excelToProducts = (workbook: XLSX.WorkBook) => {
                 crosssells: [],
                 order: 0,
                 categories: productData["Thema"] ? [productData["Thema"]] : [],
-                facets: [],
+                facets,
                 attributes,
                 bulkDiscount: false,
                 minOrderQuantity:
                   parseInt(productData["Mindestbestellmenge"]) || 0,
-                discountGroups,
                 children: [],
               };
             } else {
@@ -475,30 +491,6 @@ export const excelToProducts = (workbook: XLSX.WorkBook) => {
                   )}]{${v.length}} (Variante) und [${p.join(",")}]{${
                     p.length
                   }} nicht gleich sind."`
-                );
-              }
-
-              p = products[groupName].discountGroups;
-              v = [];
-
-              //Check for discount keys
-              for (let column in productData) {
-                if (column.indexOf("_Rabattberechtigt") !== -1) {
-                  v.push(column.replace("_Rabattberechtigt", ""));
-                }
-              }
-
-              if (
-                p.length !== v.length ||
-                !(p
-                  .map((name, index) => name === v[index])
-                  .reduce((a, b) => a && b),
-                true)
-              ) {
-                throw new Error(
-                  `Das Produkt auf Zeile ${index} wird ignoriert, da die Rabattgruppen [${v.join(
-                    ","
-                  )}] (Variante) und [${p.join(",")}] nicht gleich sind."`
                 );
               }
 

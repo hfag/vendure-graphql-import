@@ -54,7 +54,8 @@ export type WoocommerceRecord = {
   [key: string]: string; //for attributes
 };
 
-export type Facet = { name: string; values: string[] };
+export type AttributeFacet = { name: string; values: string[] };
+export type Facet = { code: string; values: string[] };
 
 export type Product = {
   sku: string;
@@ -68,11 +69,10 @@ export type Product = {
   upsells: string[];
   crosssells: string[];
   order: number;
-  attributes: Facet[];
+  attributes: AttributeFacet[];
   facets: Facet[];
   minOrderQuantity: number;
   bulkDiscount: boolean;
-  discountGroups: string[];
   children: ProductVariant[];
 };
 

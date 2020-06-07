@@ -48,6 +48,8 @@ import {
   ProductVariantCreation,
   ProductVariantUpdate,
   Product,
+  AttributeFacet,
+  Facet,
 } from "./types";
 
 if (process.argv.length < 4) {
@@ -125,12 +127,15 @@ async function main() {
     const attributeNameToGroup: { [name: string]: OptionGroup } = {};
 
     //move some attributes to facets
-    const facets = product.attributes.filter(
-      (attribute) => attribute.values.length === 1
-    );
+    const facets: (AttributeFacet | Facet)[] = [
+      ...product.facets,
+      ...product.attributes.filter(
+        (attribute) => attribute.values.length === 1
+      ),
+    ];
 
     const facetResponses = await Promise.all(
-      facets.map((f) => findOrCreateFacet(graphQLClient, f.name, f.values))
+      facets.map((f) => findOrCreateFacet(graphQLClient, f))
     );
 
     const facetIds: string[] = [].concat.apply(
@@ -147,8 +152,10 @@ async function main() {
     product.children.forEach((variant) => {
       variant.attributes = variant.attributes.filter(
         (a) =>
-          !facets.find(
-            (f) => f.name.toLocaleLowerCase() === a.name.toLocaleLowerCase()
+          !facets.find((f) =>
+            "name" in f
+              ? f.name.toLocaleLowerCase() === a.name.toLocaleLowerCase()
+              : false
           )
       );
     });
@@ -323,7 +330,7 @@ async function main() {
       if (exists && hasAllOptionGroups(variant, variants)) {
         variantUpdates.push({
           id: variantId,
-          translations: ["en", "de"].map((lang) => ({
+          translations: ["de"].map((lang) => ({
             languageCode: lang,
             name: product.name,
           })),
@@ -357,7 +364,7 @@ async function main() {
 
         variantCreations.push({
           productId,
-          translations: ["en", "de"].map((lang) => ({
+          translations: ["de"].map((lang) => ({
             languageCode: lang,
             name: product.name,
           })),
