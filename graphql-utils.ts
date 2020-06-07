@@ -12,6 +12,12 @@ import {
   ProductVariantUpdate,
   AttributeFacet,
 } from "./types";
+import {
+  downloadFiles,
+  cleanDownloads,
+  getFilenameFromUrl,
+  isValidUrl,
+} from "./utils";
 
 export const uploadFilesToGraphql = async (
   endpoint: string,
@@ -120,7 +126,7 @@ export const getCollections = async (graphQLClient: GraphQLClient) => {
 export const createCategoryCollections = async (
   graphQLClient: GraphQLClient,
   collections: { name: string; facetValueIds: string[] }[]
-): Promise<string[]> => {
+): Promise<{ id: string; name: string }[]> => {
   return await Promise.all(
     collections.map((collection) =>
       graphQLClient
@@ -128,6 +134,7 @@ export const createCategoryCollections = async (
           `mutation Collections($input: CreateCollectionInput!){
             createCollection(input: $input){
               id
+              name
             }
           }`,
           {
@@ -159,8 +166,12 @@ export const createCategoryCollections = async (
           }
         )
         .then((response) => {
-          //@ts-ignore
-          return response.createCollection.id;
+          return {
+            //@ts-ignore
+            id: response.createCollection.id,
+            //@ts-ignore
+            name: response.createCollection.name,
+          };
         })
     )
   );
@@ -257,6 +268,81 @@ export const createFacetValues = async (
   );
 
   return response.createFacetValues;
+};
+
+export const findOrCreateAssets = async (
+  graphQLClient: GraphQLClient,
+  endpoint: string,
+  token: string,
+  urls: string[]
+): Promise<string[]> => {
+  const assetIdsByName = await getAssetsIdByName(
+    graphQLClient,
+    urls.map((image) => getFilenameFromUrl(image))
+  );
+
+  // console.log(
+  //   `${Object.values(assetIdsByName).length} von ${
+  //     urls.length
+  //   } Bilder konnten bereits in der Datenbank gefunden werden.`
+  // );
+
+  const unmatched = urls.filter(
+    (image) => !(getFilenameFromUrl(image) in assetIdsByName)
+  );
+
+  const invalid = unmatched.filter((s) => !isValidUrl(s));
+
+  if (invalid.length > 0) {
+    throw new Error(
+      `${invalid.join(
+        ", "
+      )} wurden nicht hochgeladen und sind auch keine gültigen URLs!`
+    );
+  }
+
+  const downloads = await downloadFiles(unmatched);
+
+  // console.log(
+  //   `${downloads.length} von ${unmatched.length} Bilder heruntergeladen. Lade sie nun hoch...`
+  // );
+  const uploadResponse = await uploadFilesToGraphql(endpoint, token, downloads);
+
+  cleanDownloads();
+
+  return [
+    ...Object.values(assetIdsByName),
+    ...uploadResponse.data.createAssets.map((a) => a.id),
+  ];
+};
+
+export const getAssetsIdByName = async (
+  graphQLClient: GraphQLClient,
+  names: string[]
+): Promise<{ [key: string]: string }> => {
+  const mappings = await Promise.all(
+    names.map(async (name) => {
+      const value: {
+        assetByName: { id: number };
+      } = await graphQLClient.request(
+        `query AssetByName($name: String!){
+        assetByName(name: $name){
+          id
+        }
+      }`,
+        { name }
+      );
+
+      return value.assetByName ? { name, id: value.assetByName.id } : null;
+    })
+  );
+
+  return mappings.reduce((object: { [key: string]: any }, mapping) => {
+    if (mapping) {
+      object[mapping.name] = mapping.id;
+    }
+    return object;
+  }, {});
 };
 
 export const findOrCreateFacet = async (

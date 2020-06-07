@@ -2,6 +2,7 @@ import * as fs from "fs";
 import slugify from "slugify";
 import parse from "csv-parse/lib/sync";
 import XLSX from "xlsx";
+const util = require("util");
 import { GraphQLClient } from "graphql-request";
 
 import {
@@ -35,6 +36,8 @@ import {
   findOrCreateFacet,
   updateProductCrosssells,
   updateProductUpsells,
+  getAssetsIdByName,
+  findOrCreateAssets,
 } from "./graphql-utils";
 import {
   SLUGIFY_OPTIONS,
@@ -42,7 +45,13 @@ import {
   mapWoocommerceRecordsToProducts,
   excelToProducts,
 } from "./data-utils";
-import { downloadFile, cleanDownloads, downloadFiles, notEmpty } from "./utils";
+import {
+  downloadFile,
+  cleanDownloads,
+  downloadFiles,
+  notEmpty,
+  getFilenameFromUrl,
+} from "./utils";
 import {
   OptionGroup,
   ProductVariantCreation,
@@ -134,6 +143,8 @@ async function main() {
       ),
     ];
 
+    // console.log(util.inspect(product, { showHidden: false, depth: null }));
+
     const facetResponses = await Promise.all(
       facets.map((f) => findOrCreateFacet(graphQLClient, f))
     );
@@ -188,9 +199,12 @@ async function main() {
       }
     });
 
-    collectionIds = collectionIds.concat(
-      await createCategoryCollections(graphQLClient, collectionsToCreate)
+    const newCollections = await createCategoryCollections(
+      graphQLClient,
+      collectionsToCreate
     );
+    collections.push(...newCollections);
+    collectionIds = collectionIds.concat(newCollections.map((c) => c.id));
 
     if (exists) {
       await assertConfirm(
@@ -215,20 +229,12 @@ async function main() {
         `Es werden ${product.images.length} Bilder herunter- und dann wieder hochgeladen falls diese noch vorhanden sind.`
       );
 
-      const downloads = await downloadFiles(product.images);
-
-      console.log(
-        `${downloads.length} von ${product.images.length} Bilder heruntergeladen. Lade sie nun hoch...`
-      );
-      const uploadResponse = await uploadFilesToGraphql(
+      const assetIds = await findOrCreateAssets(
+        graphQLClient,
         endpoint,
         token,
-        downloads
+        product.images
       );
-
-      cleanDownloads();
-
-      const assetIds = uploadResponse.data.createAssets.map((a) => a.id);
 
       skuToProductId[sku] = await createProduct(
         graphQLClient,
@@ -341,7 +347,7 @@ async function main() {
           trackInventory: false,
           customFields: {
             bulkDiscountEnabled: variant.bulkDiscount.length > 0,
-            minimumOrderQuantity: 0,
+            minimumOrderQuantity: variant.minimumOrderQuantity,
           },
         });
       } else {
@@ -350,17 +356,12 @@ async function main() {
           variantsToDelete.push(variantId);
         }
 
-        const downloads = await downloadFiles(variant.images);
-
-        const uploadResponse = await uploadFilesToGraphql(
+        const assetIds = await findOrCreateAssets(
+          graphQLClient,
           endpoint,
           token,
-          downloads
+          variant.images
         );
-
-        cleanDownloads();
-
-        const assetIds = uploadResponse.data.createAssets.map((a) => a.id);
 
         variantCreations.push({
           productId,
@@ -388,7 +389,7 @@ async function main() {
           trackInventory: false,
           customFields: {
             bulkDiscountEnabled: variant.bulkDiscount.length > 0,
-            minimumOrderQuantity: 0,
+            minimumOrderQuantity: variant.minimumOrderQuantity,
           },
         });
       }
@@ -426,7 +427,7 @@ async function main() {
     );
     console.log("SKUs: " + variantUpdates.map((c) => c.sku).join(", "));
 
-    updateProductVariants(graphQLClient, variantUpdates);
+    await updateProductVariants(graphQLClient, variantUpdates);
 
     console.log(
       `Aktualisiere die Mengenrabatte für alle erstellten und aktualisierten Produktvarianten`

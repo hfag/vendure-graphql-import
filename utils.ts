@@ -6,18 +6,30 @@ import rimraf from "rimraf";
 import { pipeline } from "stream";
 import fetch from "node-fetch";
 
+export const getFilenameFromUrl = (fileUrl: string) => {
+  const parsed = url.parse(fileUrl);
+  if (!parsed || !parsed.pathname) {
+    return fileUrl;
+  }
+
+  return path.basename(parsed.pathname);
+};
+
+export const isValidUrl = (s: string) => {
+  try {
+    new URL(s);
+    return true;
+  } catch (err) {
+    return false;
+  }
+};
+
 const streamPipeline = util.promisify(pipeline);
 
 export const downloadFile = async (fileUrl: string, fileDirectory: string) => {
+  const f = `${fileDirectory}/${getFilenameFromUrl(fileUrl)}`;
+
   const response = await fetch(fileUrl);
-  const parsed = url.parse(fileUrl);
-
-  if (!parsed || !parsed.pathname) {
-    throw new Error(`${fileUrl} is not a valid URL!`);
-  }
-
-  const f = `${fileDirectory}/${path.basename(parsed.pathname)}`;
-
   if (!response.ok) {
     throw new Error(`unexpected response ${response.statusText}`);
   }

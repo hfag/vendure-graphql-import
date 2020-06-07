@@ -188,14 +188,17 @@ export const mapWoocommerceRecordToProduct = (
       return parts[parts.length - 1];
     }),
   images: record["Bilder"].split(",").map((x) => x.trim()),
-  upsells: record["Zusatzverkäufe"].split(",").map((x) => x.trim()),
+  upsells: record["Zusatzverkäufe"]
+    .split(",")
+    .map((x) => x.trim())
+    .filter((v) => v.length > 0 && !isNaN(parseInt(v))),
   crosssells: record["Cross-Sells (Querverkäufe)"]
     .split(",")
-    .map((x) => x.trim()),
+    .map((x) => x.trim())
+    .filter((v) => v.length > 0 && !isNaN(parseInt(v))),
   order: parseInt(record["Position"].replace("'", "")),
   attributes: [],
   facets: [],
-  minOrderQuantity: parseInt(record["Meta: _feuerschutz_min_order_quantity"]),
   bulkDiscount:
     record["Meta: _feuerschutz_variable_bulk_discount_enabled"] === "1"
       ? true
@@ -210,9 +213,8 @@ export const mapWoocommerceRecordToProductVariant = (
     sku: record["Artikelnummer"],
     price: parseFloat(record["Regulärer Preis"]),
     images: record["Bilder"].split(",").map((x) => x.trim()),
-    minimumOrderQuantity: parseInt(
-      record["Meta: _feuerschutz_min_order_quantity"]
-    ),
+    minimumOrderQuantity:
+      parseInt(record["Meta: _feuerschutz_min_order_quantity"]) || 0,
     bulkDiscount: JSON.parse(
       record["Meta: _feuerschutz_bulk_discount"] || "[]"
     ).map((discount: { qty: number; ppu: number }) => ({
@@ -224,7 +226,11 @@ export const mapWoocommerceRecordToProductVariant = (
 
   for (const key in record) {
     const parts = key.split(" ");
-    if (parts[0] !== "Attribut") {
+    if (
+      parts[0] !== "Attribut" ||
+      record[key].trim().length ===
+        0 /* this might just be empty because the data is a table */
+    ) {
       continue;
     }
     const num = parseInt(parts[1]) - 1;
@@ -269,7 +275,7 @@ export const mapWoocommerceRecordsToProducts = (
       for (const key in record) {
         const parts = key.split(" ");
 
-        if (parts[0] !== "Attribut") {
+        if (parts[0] !== "Attribut" || record[key].trim().length === 0) {
           continue;
         }
         const num = parseInt(parts[1]) - 1;
@@ -464,8 +470,6 @@ export const excelToProducts = (workbook: XLSX.WorkBook) => {
                 facets,
                 attributes,
                 bulkDiscount: false,
-                minOrderQuantity:
-                  parseInt(productData["Mindestbestellmenge"]) || 0,
                 children: [],
               };
             } else {

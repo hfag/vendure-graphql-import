@@ -71,7 +71,6 @@ export type Product = {
   order: number;
   attributes: AttributeFacet[];
   facets: Facet[];
-  minOrderQuantity: number;
   bulkDiscount: boolean;
   children: ProductVariant[];
 };
