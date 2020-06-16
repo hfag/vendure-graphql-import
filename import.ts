@@ -17,6 +17,7 @@ import {
   uploadFilesToGraphql,
   getExistingProducts,
   assertAuthentication,
+  getOptionGroups,
   getOptionGroupsByProductId,
   createProduct,
   createOptionGroup,
@@ -31,19 +32,22 @@ import {
   updateProduct,
   getFacetValues,
   createFacetValues,
-  createCategoryCollections,
+  createCategoryCollection,
   findOrCreateFacetValues,
   findOrCreateFacet,
   updateProductCrosssells,
   updateProductUpsells,
   getAssetsIdByName,
   findOrCreateAssets,
+  getFacets,
+  createFacet,
+  createOrUpdateOptionGroups,
+  createOrUpdateFacets,
 } from "./graphql-utils";
 import {
   SLUGIFY_OPTIONS,
   hasAllOptionGroups,
-  mapWoocommerceRecordsToProducts,
-  excelToProducts,
+  tableToProducts,
 } from "./data-utils";
 import {
   downloadFile,
@@ -56,10 +60,16 @@ import {
   OptionGroup,
   ProductVariantCreation,
   ProductVariantUpdate,
-  Product,
+  ProductPrototype,
   AttributeFacet,
   Facet,
+  ID,
+  Record,
+  FacetValue,
 } from "./types";
+import { IMPORT_OPTION_GROUPS } from "./data-utils/attributes";
+import { DeepRequired } from "ts-essentials";
+import { CATEGORY_FACET_CODE } from "./data-utils/facets";
 
 if (process.argv.length < 4) {
   console.error(
@@ -68,35 +78,24 @@ if (process.argv.length < 4) {
   process.exit(0);
 }
 
-let products: { [productGroupKey: string]: Product } = {};
+let records: Record[];
 
 if (process.argv[2].endsWith(".csv")) {
   console.log("Importiere aus CSV");
-  const records = parse(
-    fs.readFileSync(process.argv[2], { encoding: "utf-8" }),
-    {
-      columns: true,
-      skip_empty_lines: true,
-    }
-  );
-
-  products = mapWoocommerceRecordsToProducts(records);
+  records = parse(fs.readFileSync(process.argv[2], { encoding: "utf-8" }), {
+    columns: true,
+    skip_empty_lines: true,
+  });
 } else if (process.argv[2].endsWith(".xlsx")) {
   console.log("Importiere aus Excel-Datei");
-  products = excelToProducts(XLSX.readFile(process.argv[2]));
+  const workbook = XLSX.readFile(process.argv[2]);
+  const sheetNameList = workbook.SheetNames;
+  records = XLSX.utils.sheet_to_json(workbook.Sheets[sheetNameList[0]]);
 } else if (process.argv[2].endsWith(".json")) {
   console.log("Importiere aus JSON-Datei");
-  products = JSON.parse(
-    fs.readFileSync(process.argv[2], { encoding: "utf-8" })
-  );
+  records = JSON.parse(fs.readFileSync(process.argv[2], { encoding: "utf-8" }));
 } else {
   throw new Error("Entweder .csv, .json .xlsx Dateien!");
-}
-
-if (process.argv[3].endsWith(".json")) {
-  console.log("Schreibe JSON Ausgabe: " + process.argv[3]);
-  fs.writeFileSync(process.argv[3], JSON.stringify(products));
-  process.exit(0);
 }
 
 async function main() {
@@ -115,203 +114,148 @@ async function main() {
     },
   });
 
+  let f: Facet[] = await getFacets(graphQLClient);
+  let o: OptionGroup[] = await getOptionGroups(graphQLClient);
+
+  let products: ProductPrototype[] = [];
+
+  const r = await tableToProducts(records, o, f);
+  products = r.products;
+  o = r.optionGroups;
+  f = r.facets;
+
+  if (process.argv[3].endsWith(".json")) {
+    console.log("Schreibe JSON Ausgabe: " + process.argv[3]);
+    fs.writeFileSync(process.argv[3], JSON.stringify(products));
+    process.exit(0);
+  }
+
   const skuToProductId = await getExistingProducts(
     graphQLClient,
-    Object.keys(products)
+    products.map((p) => p.sku)
   );
 
-  const collections = await getCollections(graphQLClient);
+  console.log(`Erstelle Optionsgruppen`);
+  const optionGroups: DeepRequired<
+    OptionGroup
+  >[] = await createOrUpdateOptionGroups(graphQLClient, o);
 
-  console.log(
-    `Importiere insgesamt ${Object.values(products).length} Produkte.`
+  const optionGroupCodeToId: { [key: string]: ID } = optionGroups.reduce(
+    (obj: { [key: string]: ID }, group) => {
+      obj[group.code] = group.id;
+      return obj;
+    },
+    {}
   );
 
-  for (const sku in products) {
-    //we need to find a fitting product type
-    const product = products[sku];
-    let productId = skuToProductId[sku];
-    let exists = productId ? true : false;
+  const optionCodeToId: { [key: string]: ID } = optionGroups.reduce(
+    (obj: { [key: string]: ID }, group) => {
+      return group.options.reduce((obj: { [key: string]: ID }, option) => {
+        obj[option.code] = option.id;
+        return obj;
+      }, obj);
+    },
+    {}
+  );
 
-    let optionGroups: OptionGroup[] = [];
-    const attributeNameToGroup: { [name: string]: OptionGroup } = {};
+  console.log(`Erstelle Kategorien (Facetten und Kollektionen)`);
+  const facets: DeepRequired<Facet>[] = await createOrUpdateFacets(
+    graphQLClient,
+    f
+  );
 
-    //move some attributes to facets
-    const facets: (AttributeFacet | Facet)[] = [
-      ...product.facets,
-      ...product.attributes.filter(
-        (attribute) => attribute.values.length === 1
-      ),
-    ];
+  const facetCodeToId: { [key: string]: ID } = facets.reduce(
+    (obj: { [key: string]: ID }, facet) => {
+      obj[facet.code] = facet.id;
+      return obj;
+    },
+    {}
+  );
 
-    // console.log(util.inspect(product, { showHidden: false, depth: null }));
+  const facetValueCodeToId: { [key: string]: ID } = facets.reduce(
+    (obj: { [key: string]: ID }, facet) => {
+      return facet.values.reduce((obj: { [key: string]: ID }, value) => {
+        obj[value.code] = value.id;
+        return obj;
+      }, obj);
+    },
+    {}
+  );
 
-    const facetResponses = await Promise.all(
-      facets.map((f) => findOrCreateFacet(graphQLClient, f))
-    );
-
-    const facetIds: string[] = [].concat.apply(
-      [],
-      //@ts-ignore
-      facetResponses.map((e) => e.facetValueIds)
-    );
-
-    //remove them from attributes
-    product.attributes = product.attributes.filter(
-      (attribute) => attribute.values.length > 1
-    );
-    //also for the variants
-    product.children.forEach((variant) => {
-      variant.attributes = variant.attributes.filter(
-        (a) =>
-          !facets.find((f) =>
-            "name" in f
-              ? f.name.toLocaleLowerCase() === a.name.toLocaleLowerCase()
-              : false
+  let collections = await getCollections(graphQLClient);
+  const categoryFacet = facets.find((f) => f.code === CATEGORY_FACET_CODE);
+  const newCollectionIds = !categoryFacet
+    ? []
+    : await Promise.all(
+        categoryFacet.values
+          .filter(
+            (cat) =>
+              !collections.find(
+                (coll) =>
+                  coll.translations
+                    .find((t) => t.languageCode === "de")
+                    ?.name.toLocaleLowerCase() ===
+                  cat.translations
+                    .find((t) => t.languageCode === "de")
+                    ?.name.toLocaleLowerCase()
+              )
+          )
+          .map((cat) =>
+            createCategoryCollection(
+              graphQLClient,
+              { translations: cat.translations },
+              [cat.id]
+            )
           )
       );
-    });
 
-    const {
-      facetValueIds: categoryIds,
-      newFacetValues: newCategories,
-    } = await findOrCreateFacetValues(graphQLClient, "1", product.categories);
+  console.log(`Importiere insgesamt ${products.length} Produkte.`);
 
-    let collectionIds: string[] = [];
-    const collectionsToCreate: { name: string; facetValueIds: string[] }[] = [];
+  for (const p of products) {
+    //we need to find a fitting product type
+    let productId = skuToProductId[p.sku];
 
-    product.categories.forEach((category) => {
-      const c = collections.find(
-        (collection) =>
-          collection.name.toLocaleLowerCase() === category.toLocaleLowerCase()
-      );
+    if (typeof productId === "string") {
+      p.id = productId;
+      const pr = <Required<ProductPrototype>>p;
 
-      if (c) {
-        collectionIds.push(c.id);
-      } else {
-        //this is a new collection, i.e. the category must be new as well
-        collectionsToCreate.push({
-          name: category,
-          //could also use .find() but this way it's already an array (:
-          facetValueIds: newCategories
-            .filter((c) => c.code === slugify(category, SLUGIFY_OPTIONS))
-            .map((c) => c.id),
-        });
-      }
-    });
-
-    const newCollections = await createCategoryCollections(
-      graphQLClient,
-      collectionsToCreate
-    );
-    collections.push(...newCollections);
-    collectionIds = collectionIds.concat(newCollections.map((c) => c.id));
-
-    if (exists) {
       await assertConfirm(
-        `Produkt "${product.name}" (${product.sku}) existiert bereits und wird aktualisiert.`,
+        `Produkt "${
+          p.translations.find((t) => t.languageCode == "de")?.name
+        }" (${p.sku}) existiert bereits und wird aktualisiert.`,
         "y"
       );
 
-      optionGroups = await getOptionGroupsByProductId(graphQLClient, productId);
-
-      await updateProduct(
-        graphQLClient,
-        productId,
-        product,
-        categoryIds.concat(facetIds)
-      );
+      await updateProduct(graphQLClient, pr, facetValueCodeToId);
     } else {
       await assertConfirm(
-        `Produkt "${product.name}" (${product.sku}) existiert noch nicht und wird neu erstellt.`
+        `Produkt "${
+          p.translations.find((t) => t.languageCode === "de")?.name
+        }" (${p.sku}) existiert noch nicht und wird neu erstellt.`
       );
 
-      console.log(
-        `Es werden ${product.images.length} Bilder herunter- und dann wieder hochgeladen falls diese noch vorhanden sind.`
-      );
-
-      const assetIds = await findOrCreateAssets(
+      skuToProductId[p.sku] = await createProduct(
         graphQLClient,
         endpoint,
         token,
-        product.images
+        p,
+        facetValueCodeToId
       );
 
-      skuToProductId[sku] = await createProduct(
-        graphQLClient,
-        product,
-        assetIds,
-        categoryIds.concat(facetIds)
-      );
-
-      exists = true;
-      productId = skuToProductId[sku];
+      productId = skuToProductId[p.sku];
     }
 
-    for (const attribute of product.attributes) {
-      const slug = slugify(attribute.name, SLUGIFY_OPTIONS);
-      const groups = optionGroups.filter((g) => g.code === slug);
-      let group = groups[0];
-      if (groups.length === 0) {
-        if (
-          await rlConfirm(
-            `Es existiert bisher kein Attribut mit dem Namen "${slug}, soll es erstellt werden?"`,
-            "y"
-          )
-        ) {
-          group = await createOptionGroup(graphQLClient, slug, attribute);
-          await assignOptionGroupToProduct(graphQLClient, productId, group.id);
-        } else {
-          await assertConfirm(
-            `Oder soll stattdessen ein anderes Attribut verwendet werden?`,
-            "n"
-          );
-          optionGroups.forEach((g, i) =>
-            console.log(
-              `${i}) ${g.name} (${g.code}) mit den Werten [${g.options
-                .map((o) => o.name)
-                .join(", ")}]`
-            )
-          );
+    const product = <Required<ProductPrototype>>p;
 
-          group = await selection(optionGroups);
-        }
-      } else if (groups.length > 1) {
-        console.log(`Es existieren mehrere Attribute mit dem Namen "${slug}".`);
-        console.log(
-          `Welchem soll das Produktattribut "${attribute.name}" von ${
-            product.name
-          } (${product.sku}) zugeordnet werden? (0-${groups.length - 1})`
-        );
-        console.log(
-          `Folgende Attributwerte werden benötigt: [${attribute.values.join(
-            ", "
-          )}]\n`
-        );
-        groups.forEach((g, i) =>
-          console.log(
-            `\t${i}) "${g.name}" (${g.code}) mit den Werten [${g.options
-              .map((o) => o.name)
-              .join(", ")}]`
-          )
-        );
-
-        group = await selection(groups);
-      }
-
-      const missingValues = attribute.values.filter(
-        (v) =>
-          !group.options.find((o) => o.code === slugify(v, SLUGIFY_OPTIONS))
-      );
-
-      console.log(
-        `Erstelle ${missingValues.length} neue Werte im Attribut ${
-          attribute.name
-        }: [${missingValues.join(", ")}]`
-      );
-
-      await createProductOptions(graphQLClient, group.id, missingValues);
-      attributeNameToGroup[attribute.name] = group;
-    }
+    await Promise.all(
+      product.optionGroupCodes.map((code) =>
+        assignOptionGroupToProduct(
+          graphQLClient,
+          product.id,
+          optionGroupCodeToId[code]
+        )
+      )
+    );
 
     const { variants, variantSkuToId } = await getExistingProductVariants(
       graphQLClient,
@@ -336,17 +280,19 @@ async function main() {
       if (exists && hasAllOptionGroups(variant, variants)) {
         variantUpdates.push({
           id: variantId,
-          translations: ["de"].map((lang) => ({
-            languageCode: lang,
-            name: product.name,
+          translations: product.translations.map((t) => ({
+            languageCode: t.languageCode,
+            name: t.name,
           })),
-          facetValueIds: [],
+          facetValueIds: variant.facetValueCodes.map(
+            (code) => facetValueCodeToId[code]
+          ),
           sku: variant.sku,
           price: variant.price,
           taxCategoryId: 1,
           trackInventory: false,
           customFields: {
-            bulkDiscountEnabled: variant.bulkDiscount.length > 0,
+            bulkDiscountEnabled: variant.bulkDiscounts.length > 0,
             minimumOrderQuantity: variant.minimumOrderQuantity,
           },
         });
@@ -360,35 +306,28 @@ async function main() {
           graphQLClient,
           endpoint,
           token,
-          variant.images
+          variant.assets
         );
 
         variantCreations.push({
           productId,
-          translations: ["de"].map((lang) => ({
-            languageCode: lang,
-            name: product.name,
+          translations: product.translations.map((t) => ({
+            languageCode: t.languageCode,
+            name: t.name,
           })),
-          facetValueIds: [],
+          facetValueIds: variant.facetValueCodes.map(
+            (code) => facetValueCodeToId[code]
+          ),
           sku: variant.sku,
-          price: variant.price * 100 /* weird but that's just how it is */,
+          price: variant.price * 100,
           taxCategoryId: 1,
-          optionIds: variant.attributes
-            .map(({ name, value }) => {
-              const slug = slugify(value, SLUGIFY_OPTIONS);
-              const group = attributeNameToGroup[name].options.find(
-                (o) => o.code === slug
-              );
-
-              return group ? group.id : null;
-            })
-            .filter(notEmpty),
+          optionIds: variant.optionCodes.map((code) => optionCodeToId[code]),
           featuredAssetId: assetIds[0],
           assetIds,
           // stockOnHand: null,
           trackInventory: false,
           customFields: {
-            bulkDiscountEnabled: variant.bulkDiscount.length > 0,
+            bulkDiscountEnabled: variant.bulkDiscounts.length > 0,
             minimumOrderQuantity: variant.minimumOrderQuantity,
           },
         });
@@ -396,12 +335,14 @@ async function main() {
 
       variantBulkDiscounts.push({
         sku: variant.sku,
-        discounts: variant.bulkDiscount,
+        discounts: variant.bulkDiscounts,
       });
     }
 
     console.log(
-      `Lösche ${variantsToDelete.length} Produktvarianten von ${product.name} (${product.sku}):`
+      `Lösche ${variantsToDelete.length} Produktvarianten von ${
+        product.translations.find((t) => t.languageCode === "de")?.name
+      } (${product.sku}):`
     );
 
     await deleteProductVariants(graphQLClient, variantsToDelete);
@@ -444,22 +385,24 @@ async function main() {
 
   console.log("Füge nun noch die Verlinkungen (Cross- und Upsells) ein.");
 
-  const crosssells: { productId: string; productIds: string[] }[] = [];
-  const upsells: { productId: string; productIds: string[] }[] = [];
+  const crosssells: { productId: ID; productIds: ID[] }[] = [];
+  const upsells: { productId: ID; productIds: ID[] }[] = [];
 
   for (const sku in products) {
     //we need to find a fitting product type
     const product = products[sku];
-    if (product.crosssells.length > 0) {
+    if (product.crosssellsGroupSKUs.length > 0) {
       crosssells.push({
         productId: skuToProductId[sku],
-        productIds: product.crosssells.map((sku) => skuToProductId[sku]),
+        productIds: product.crosssellsGroupSKUs.map(
+          (sku) => skuToProductId[sku]
+        ),
       });
     }
-    if (product.upsells.length > 0) {
+    if (product.upsellsGroupSKUs.length > 0) {
       upsells.push({
         productId: skuToProductId[sku],
-        productIds: product.upsells.map((sku) => skuToProductId[sku]),
+        productIds: product.upsellsGroupSKUs.map((sku) => skuToProductId[sku]),
       });
     }
   }

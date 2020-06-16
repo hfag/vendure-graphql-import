@@ -1,538 +1,681 @@
 import slugify from "slugify";
 import XLSX from "xlsx";
 import {
-  WoocommerceRecord,
-  Product,
-  ProductVariant,
+  Record,
+  ProductPrototype,
+  ProductVariantPrototype,
   AttributeFacet,
   Facet,
+  BulkDiscount,
+  ID,
+  LanguageCode,
+  OptionGroup,
 } from "./types";
+import {
+  IMPORT_OPTION_GROUPS,
+  IMPORT_ATTRIBUTE_COLUMNS,
+} from "./data-utils/attributes";
+import { selection } from "./rl-utils";
+import {
+  CATEGORY_FACET_CODE,
+  RESELLER_DISCOUNT_FACET_CODE,
+} from "./data-utils/facets";
 
 export const SLUGIFY_OPTIONS = { lower: true, strict: true };
+export const SEPERATOR = "|";
+export const HIERARCHY_SEPERATOR = ">";
 
-export const RESELLER_DISCOUNT_FACET_CODE = "reseller-discount";
-
-interface AttributeMeta {
-  name: string;
-  columnKey: string;
-  slug: string;
-  position: number;
-  visibility: boolean;
-  variation: boolean;
-  isTaxonomy: boolean;
-}
-
-const EXCEL_ATTRIBUTES: AttributeMeta[] = [
-  {
-    name: "Ausführung",
-    columnKey: "Ausführung",
-    slug: "model",
-    position: 50,
-    visibility: true,
-    variation: true,
-    isTaxonomy: false,
-  },
-  {
-    name: "Pfeilrichtung",
-    columnKey: "Pfeilrichtung",
-    slug: "arrow-dir",
-    position: 0,
-    visibility: true,
-    variation: true,
-    isTaxonomy: false,
-  },
-  {
-    name: "Grösse",
-    columnKey: "Grösse",
-    slug: "size",
-    position: 1,
-    visibility: true,
-    variation: true,
-    isTaxonomy: true,
-  },
-  {
-    name: "Jahr",
-    columnKey: "Jahr",
-    slug: "year",
-    position: 60,
-    visibility: true,
-    variation: true,
-    isTaxonomy: false,
-  },
-  {
-    name: "Farbe",
-    columnKey: "Farbe",
-    slug: "color",
-    position: 70,
-    visibility: true,
-    variation: true,
-    isTaxonomy: false,
-  },
-  {
-    name: "Format",
-    columnKey: "Format",
-    slug: "format",
-    position: 80,
-    visibility: true,
-    variation: true,
-    isTaxonomy: false,
-  },
-  {
-    name: "Leuchtdichte",
-    columnKey: "Leuchtdichte_mcd",
-    slug: "luminance",
-    position: 40,
-    visibility: true,
-    variation: true,
-    isTaxonomy: true,
-  },
-  {
-    name: "Material",
-    columnKey: "Material",
-    slug: "material",
-    position: 10,
-    visibility: true,
-    variation: true,
-    isTaxonomy: true,
-  },
-  {
-    name: "Norm",
-    columnKey: "Norm",
-    slug: "norm",
-    position: 90,
-    visibility: true,
-    variation: true,
-    isTaxonomy: false,
-  },
-  {
-    name: "PSPA Klasse",
-    columnKey: "PSPA_Class",
-    slug: "pspa-class",
-    position: 100,
-    visibility: true,
-    variation: true,
-    isTaxonomy: false,
-  },
-  {
-    name: "Ursprungsland",
-    columnKey: "Ursprungsland",
-    slug: "country",
-    position: 120,
-    visibility: true,
-    variation: true,
-    isTaxonomy: true,
-  },
-  {
-    name: "Druckeigenschaft(-en)",
-    columnKey: "Eigenschaft_Druck",
-    slug: "print-property",
-    position: 110,
-    visibility: true,
-    variation: true,
-    isTaxonomy: true,
-  },
-  {
-    name: "Einheit",
-    columnKey: "Einheit",
-    slug: "unit",
-    position: 1000,
-    visibility: true,
-    variation: true,
-    isTaxonomy: true,
-  },
-  {
-    name: "Symbolnummer",
-    columnKey: "Symbolnummer",
-    slug: "symbol-number",
-    position: 990,
-    visibility: true,
-    variation: true,
-    isTaxonomy: true,
-  },
-  {
-    name: "Inhalt",
-    columnKey: "Inhalt",
-    slug: "content",
-    position: 1,
-    visibility: true,
-    variation: true,
-    isTaxonomy: false,
-  },
-  {
-    name: "Variante",
-    columnKey: "Variante",
-    slug: "product_variation",
-    position: 0,
-    visibility: true,
-    variation: true,
-    isTaxonomy: false,
-  },
-].sort((a, b) => a.position - b.position);
-
-export const mapWoocommerceRecordToProduct = (
-  record: WoocommerceRecord
-): Product => ({
-  sku: record["Artikelnummer"],
-  name: record["Name"],
-  description: record["Beschreibung"]
-    .replace(/<\/li>(\s)*\\n/g, "</li>")
-    .replace(/\\n/g, "<br>"),
-  length: parseFloat(record["Länge (mm)"]) || 0,
-  width: parseFloat(record["Breite (mm)"]) || 0,
-  height: parseFloat(record["Höhe (mm)"]) || 0,
-  categories: record["Kategorien"]
-    .split(",")
-    .map((s) => s.trim())
-    .map((s) => {
-      const parts = s.split(">");
-      return parts[parts.length - 1];
-    }),
-  images: record["Bilder"].split(",").map((x) => x.trim()),
-  upsells: record["Zusatzverkäufe"]
-    .split(",")
-    .map((x) => x.trim())
-    .filter((v) => v.length > 0 && !isNaN(parseInt(v))),
-  crosssells: record["Cross-Sells (Querverkäufe)"]
-    .split(",")
-    .map((x) => x.trim())
-    .filter((v) => v.length > 0 && !isNaN(parseInt(v))),
-  order: parseInt(record["Position"].replace("'", "")),
-  attributes: [],
-  facets: [],
-  bulkDiscount:
-    record["Meta: _feuerschutz_variable_bulk_discount_enabled"] === "1"
-      ? true
-      : false,
-  children: [],
-});
-
-export const mapWoocommerceRecordToProductVariant = (
-  record: WoocommerceRecord
+const getIntegerValue = <T>(
+  value: string | number | undefined,
+  fallback: T
 ) => {
-  const variant: ProductVariant = {
-    sku: record["Artikelnummer"],
-    price: parseFloat(record["Regulärer Preis"]),
-    images: record["Bilder"].split(",").map((x) => x.trim()),
-    minimumOrderQuantity:
-      parseInt(record["Meta: _feuerschutz_min_order_quantity"]) || 0,
-    bulkDiscount: JSON.parse(
-      record["Meta: _feuerschutz_bulk_discount"] || "[]"
-    ).map((discount: { qty: number; ppu: number }) => ({
-      quantity: discount.qty,
-      price: discount.ppu,
-    })),
-    attributes: [],
-  };
-
-  for (const key in record) {
-    const parts = key.split(" ");
-    if (
-      parts[0] !== "Attribut" ||
-      record[key].trim().length ===
-        0 /* this might just be empty because the data is a table */
-    ) {
-      continue;
-    }
-    const num = parseInt(parts[1]) - 1;
-    const type = parts[2];
-
-    if (!variant.attributes[num]) {
-      variant.attributes[num] = { name: "", value: "" };
-    }
-
-    switch (type) {
-      case "Name":
-        variant.attributes[num].name = record[key];
-        break;
-      case "Wert(e)":
-        variant.attributes[num].value = record[key];
-        break;
-
-      default:
-        break;
-    }
+  if (typeof value === "string" && value.length > 0) {
+    return parseInt(value);
+  } else if (typeof value === "number") {
+    return value;
+  } else {
+    return fallback;
   }
-
-  return variant;
 };
 
-export const mapWoocommerceRecordsToProducts = (
-  records: WoocommerceRecord[]
+const getFloatingPointValue = <T>(
+  value: string | number | undefined,
+  fallback: T
 ) => {
-  const products: { [productGroupKey: string]: Product } = {};
+  if (typeof value === "string" && value.length > 0) {
+    return parseFloat(value);
+  } else if (typeof value === "number") {
+    return value;
+  } else {
+    return fallback;
+  }
+};
 
-  for (const record of records) {
-    if (record["Typ"] === "variable") {
-      if (record["Übergeordnetes Produkt"].length > 0) {
-        console.error(record);
-        throw new Error(
-          "Ein variables Produkt kann kein übergeordnetes Produkt besitzen!"
-        );
-      }
+export const tableToProducts = async (
+  records: Record[],
+  optionGroups: OptionGroup[],
+  facets: Facet[]
+) => {
+  const products: (ProductPrototype & { translationId?: ID })[] = [];
+  const variants: (ProductVariantPrototype &
+    ProductPrototype & { parentId: string; translationId?: ID })[] = [];
 
-      products[record["Artikelnummer"]] = mapWoocommerceRecordToProduct(record);
+  for (let index = 0; index < records.length; index++) {
+    const record = records[index];
+    const inRecord = (column: string) => column in record;
 
-      for (const key in record) {
-        const parts = key.split(" ");
-
-        if (parts[0] !== "Attribut" || record[key].trim().length === 0) {
-          continue;
-        }
-        const num = parseInt(parts[1]) - 1;
-        const type = parts[2];
-
-        if (!products[record["Artikelnummer"]].attributes[num]) {
-          products[record["Artikelnummer"]].attributes[num] = {
-            name: "",
-            values: [],
-          };
-        }
-
-        switch (type) {
-          case "Name":
-            products[record["Artikelnummer"]].attributes[num].name =
-              record[key];
-            break;
-          case "Wert(e)":
-            products[record["Artikelnummer"]].attributes[num].values = record[
-              key
-            ]
-              .split(",")
-              .map((s: string) => s.trim());
-            break;
-
-          default:
-            break;
-        }
-      }
-    } else if (record["Typ"] === "variation") {
-      if (
-        record["Übergeordnetes Produkt"].length === 0 ||
-        !products[record["Übergeordnetes Produkt"]]
-      ) {
-        console.log(record);
-        throw new Error(
-          "Produktvarianten benötigen ein übergeordnetes Produkt!"
-        );
-      }
-
-      const parent = record["Übergeordnetes Produkt"];
-      products[parent].children.push(
-        mapWoocommerceRecordToProductVariant(record)
+    let column = IMPORT_ATTRIBUTE_COLUMNS.id.find(inRecord);
+    if (!column) {
+      throw new Error(
+        `Es wurde keine Spalte für IDs gefunden. Gültig sind ${IMPORT_ATTRIBUTE_COLUMNS.id.join(
+          ", "
+        )}`
       );
     }
-  }
+    const id: ID = record[column];
 
-  return products;
-};
+    column = IMPORT_ATTRIBUTE_COLUMNS.parentId.find(inRecord);
+    if (!column) {
+      throw new Error(
+        `Es wurde keine Spalte für übergeordnete IDs gefunden. Gültig sind ${IMPORT_ATTRIBUTE_COLUMNS.parentId.join(
+          ", "
+        )}`
+      );
+    }
+    const parentId: string | null =
+      record[column] == 0 || record[column] === "0"
+        ? null
+        : record[column].toString();
 
-export const excelToProducts = (workbook: XLSX.WorkBook) => {
-  const sheetNameList = workbook.SheetNames;
+    column = IMPORT_ATTRIBUTE_COLUMNS.sku.find(inRecord);
+    if (!column) {
+      throw new Error(
+        `Es wurde keine Spalte für Artikelnummern gefunden. Gültig sind ${IMPORT_ATTRIBUTE_COLUMNS.sku.join(
+          ", "
+        )}`
+      );
+    }
 
-  const products: { [productGroupKey: string]: Product } = {};
+    const sku: string = record[column].toString().trim();
 
-  sheetNameList.forEach((sheetName) => {
-    /* iterate through sheets */
-    const excelProducts: { [key: string]: any }[] = XLSX.utils.sheet_to_json(
-      workbook.Sheets[sheetName]
+    if (sku.length === 0) {
+      throw new Error(
+        `Spalte ${column} auf Zeile ${index} besitzt keine gültige Artikelnummer!`
+      );
+    }
+
+    column = IMPORT_ATTRIBUTE_COLUMNS.language.find(inRecord);
+
+    const languageField = column && record[column];
+    let languageCode: LanguageCode;
+    switch (languageField) {
+      case "fr":
+        languageCode = "fr";
+        break;
+      case "de":
+      default:
+        languageCode = "de";
+    }
+
+    column = IMPORT_ATTRIBUTE_COLUMNS.translationId.find(inRecord);
+    const translationId = column && record[column];
+
+    column = IMPORT_ATTRIBUTE_COLUMNS.name.find(inRecord);
+    const nameField = column && record[column].toString().trim();
+    if (typeof nameField !== "string" || nameField.length === 0) {
+      throw new Error(
+        `Auf Zeile ${index} wurde kein Name gefunden. Gültig sind ${IMPORT_ATTRIBUTE_COLUMNS.name.join(
+          ", "
+        )}`
+      );
+    }
+    let name: string = nameField;
+
+    column = IMPORT_ATTRIBUTE_COLUMNS.description.find(inRecord);
+    const descriptionField = column && record[column];
+    const description: string =
+      typeof descriptionField === "string" ? descriptionField : "";
+
+    column = IMPORT_ATTRIBUTE_COLUMNS.slug.find(inRecord);
+    const slugField = column && record[column];
+    const slug: string =
+      typeof slugField === "string"
+        ? slugField
+        : slugify(name, SLUGIFY_OPTIONS);
+
+    column = IMPORT_ATTRIBUTE_COLUMNS.price.find(inRecord);
+    if (!column) {
+      throw new Error(
+        `Auf Zeile ${index} wurde keine Preisspalte gefunden. Gültig sind ${IMPORT_ATTRIBUTE_COLUMNS.price.join(
+          ", "
+        )}`
+      );
+    }
+    const priceField = record[column];
+    let price: number;
+
+    if (typeof priceField === "number") {
+      price = priceField;
+    } else if (!isNaN(parseFloat(priceField))) {
+      price = parseFloat(priceField);
+    } else if (priceField.includes("CHF")) {
+      price = parseFloat(priceField.replace("CHF", "").trim());
+    } else {
+      throw new Error(
+        `Spalte ${column} auf Zeile ${index} besitzt folgenden Inhalt: '${priceField}'. Das ist ein ungültiges Preisformat!`
+      );
+    }
+
+    if (price < 0) {
+      throw new Error(
+        `Spalte ${column} auf Zeile ${index} enthält einen negativen Preis!`
+      );
+    }
+
+    column = IMPORT_ATTRIBUTE_COLUMNS.minimumOrderQuantity.find(inRecord);
+    const minimumOrderQuantity: number = getIntegerValue(
+      column && record[column],
+      0
     );
 
-    excelProducts
-      .filter((productData) => productData["Shop_Produkt_Ja_Nein"] === 1)
-      .forEach((productData: { [key: string]: any }, index: number) => {
-        //Merging variants with each other based on variation code
-        try {
-          let price = 0;
+    if (isNaN(minimumOrderQuantity)) {
+      throw new Error(
+        `Spalte ${column} auf Zeile ${index} enthält eine ungültige Mindestbestellmenge!`
+      );
+    }
 
-          if ("Einzelpreis" in productData) {
-            if (
-              typeof productData["Einzelpreis"] === "string" &&
-              productData["Einzelpreis"].includes("CHF")
-            ) {
-              price = parseFloat(
-                productData["Einzelpreis"].trim().split(" ")[1]
-              );
-            } else if (typeof productData["Einzelpreis"] === "number") {
-              price = productData["Einzelpreis"];
-            } else {
-              throw new Error(
-                `Ignoriere das Produkt auf Zeile ${index}, productData["Einzelpreis"]: "${productData["Einzelpreis"]}" ist ungültig`
-              );
-            }
+    column = IMPORT_ATTRIBUTE_COLUMNS.length.find(inRecord);
+    const length: number | undefined = getFloatingPointValue(
+      column && record[column],
+      undefined
+    );
+    if (length && isNaN(length)) {
+      throw new Error(
+        `Spalte ${column} auf Zeile ${index} enthält eine ungültige Länge!`
+      );
+    }
 
-            if (price <= 0) {
-              throw new Error(
-                `Das Produkt auf Zeile ${index} wird ignoriert, da der Preis negativ ist`
-              );
-            }
-          } else {
-            throw new Error(
-              `Das Produkt auf Zeile ${index} wird ignoriert, da es keinen "Einzelpreis" besitzt`
-            );
-          }
+    column = IMPORT_ATTRIBUTE_COLUMNS.width.find(inRecord);
+    const width: number | undefined = getFloatingPointValue(
+      column && record[column],
+      undefined
+    );
+    if (width && isNaN(width)) {
+      throw new Error(
+        `Spalte ${column} auf Zeile ${index} enthält eine ungültige Breite!`
+      );
+    }
 
-          const variant: ProductVariant = {
-            sku: productData["Artikel_Nummer_Produkt"] || "",
-            price,
-            images: [],
-            minimumOrderQuantity:
-              parseInt(productData["Mindestbestellmenge"]) || 0,
-            bulkDiscount: [], //filled below
-            attributes: [], //filled below
-          };
+    column = IMPORT_ATTRIBUTE_COLUMNS.height.find(inRecord);
+    const height: number | undefined = getFloatingPointValue(
+      column && record[column],
+      undefined
+    );
+    if (height && isNaN(height)) {
+      throw new Error(
+        `Spalte ${column} auf Zeile ${index} enthält eine ungültige Höhe!`
+      );
+    }
 
-          //modify attribute columns
+    column = IMPORT_ATTRIBUTE_COLUMNS.assets.find(inRecord);
+    const assetField = column && record[column];
+    const assets: string[] =
+      typeof assetField === "string" ? assetField.split(SEPERATOR) : [];
 
-          //Merge BOGEN + Stückzahl pro Einheit
-          if (
-            "Stückzahl pro Einheit" in productData &&
-            productData["Stückzahl pro Einheit"] &&
-            "Einheit" in productData
-          ) {
-            productData[
-              "Einheit"
-            ] = `${productData["Einheit"]} (${productData["Stückzahl pro Einheit"]} STK)`;
-          }
+    column = IMPORT_ATTRIBUTE_COLUMNS.upSells.find(inRecord);
+    const upSellsField = column && record[column];
+    const upSells =
+      typeof upSellsField === "string" ? upSellsField.split(SEPERATOR) : [];
 
-          //Bulk discount
+    column = IMPORT_ATTRIBUTE_COLUMNS.crossSells.find(inRecord);
+    const crossSellsField = column && record[column];
+    const crossSells =
+      typeof crossSellsField === "string"
+        ? crossSellsField.split(SEPERATOR)
+        : [];
 
-          for (let column in productData) {
-            if (column.indexOf("VP Staffel ") !== -1) {
-              const pricePerUnit = parseFloat(
-                productData[column].toString().replace("CHF", "").trim()
-              );
-              const quantity = parseInt(
-                column.replace("VP Staffel ", "").trim(),
-                10
-              );
+    const categories: string[] = [];
 
-              if (pricePerUnit > 0 && quantity > 0) {
-                variant.bulkDiscount.push({
-                  price: pricePerUnit,
-                  quantity: quantity,
-                });
-              }
-            }
-          }
+    column = IMPORT_ATTRIBUTE_COLUMNS.categories.find(inRecord);
+    const categoriesField = column && record[column];
+    if (typeof categoriesField === "string") {
+      categories.push(...categoriesField.split(SEPERATOR));
+    }
 
-          EXCEL_ATTRIBUTES.filter(
-            ({ columnKey }) => columnKey in productData
-          ).forEach((attribute) => {
-            variant.attributes.push({
-              name: attribute.name,
-              value: productData[attribute.columnKey],
+    column = IMPORT_ATTRIBUTE_COLUMNS.hierarchicalCategories.find(inRecord);
+    const hierarchicalCategoriesField = column && record[column];
+    if (typeof hierarchicalCategoriesField === "string") {
+      categories.push(
+        ...hierarchicalCategoriesField.split(SEPERATOR).map((c) => {
+          const cat = c.split(HIERARCHY_SEPERATOR);
+          return cat[cat.length - 1];
+        })
+      );
+    }
+
+    const resellerDiscountCategories: string[] = [];
+
+    column = IMPORT_ATTRIBUTE_COLUMNS.resellerDiscountCategories.find(inRecord);
+    const resellerDiscountCategoriesField = column && record[column];
+    if (typeof resellerDiscountCategoriesField === "string") {
+      resellerDiscountCategories.push(
+        ...resellerDiscountCategoriesField.split(SEPERATOR)
+      );
+    }
+
+    //dirty stuff
+
+    //modify some option group columns before processing them alltogether
+
+    const unitColumn = IMPORT_ATTRIBUTE_COLUMNS.unit.find(inRecord);
+    const quantityPerUnitColumn = IMPORT_ATTRIBUTE_COLUMNS.quantityPerUnit.find(
+      inRecord
+    );
+
+    if (quantityPerUnitColumn && unitColumn) {
+      const unit = record[unitColumn];
+      const quantityPerUnitField = record[quantityPerUnitColumn];
+      let quantityPerUnit: number;
+
+      if (typeof unit !== "string") {
+        throw new Error(
+          `Spalte ${unitColumn} auf Zeile ${index} enthält eine ungültige Einheit! Zahlen sind keine Einheiten!`
+        );
+      }
+
+      if (typeof quantityPerUnitField === "string") {
+        quantityPerUnit = parseFloat(quantityPerUnitField);
+      } else {
+        quantityPerUnit = quantityPerUnitField;
+      }
+
+      if (isNaN(quantityPerUnit)) {
+        throw new Error(
+          `Spalte ${unitColumn} auf Zeile ${index} enthält eine ungültige Stückzahl pro Einheit!`
+        );
+      }
+
+      record[unitColumn] = `${unit} (${quantityPerUnit} STK)`;
+    }
+
+    //find bulk discounts
+    column = IMPORT_ATTRIBUTE_COLUMNS.bulkDiscounts.find(inRecord);
+    const bulkDiscountsField = column && record[column];
+    let bulkDiscounts: BulkDiscount[] = [];
+
+    if (bulkDiscountsField) {
+      try {
+        if (typeof bulkDiscountsField !== "string") {
+          //go to other error handler
+          throw new Error();
+        }
+
+        bulkDiscounts = JSON.parse(bulkDiscountsField);
+      } catch (e) {
+        throw new Error(
+          `Spalte ${column} auf Zeile ${index} enthält nicht eine gültige JSON-Codierung von Mengenrabatt!`
+        );
+      }
+    } else {
+      //if there's no bulk discount field check for the multi column format
+
+      for (let column in record) {
+        if (column.indexOf("VP Staffel ") !== -1) {
+          const pricePerUnit = parseFloat(
+            record[column].toString().replace("CHF", "").trim()
+          );
+          const quantity = parseInt(
+            column.replace("VP Staffel ", "").trim(),
+            10
+          );
+
+          if (pricePerUnit > 0 && quantity > 0) {
+            bulkDiscounts.push({
+              price: pricePerUnit,
+              quantity: quantity,
             });
+          }
+        }
+      }
+    }
+    //end dirty stuff
+
+    //import option groups
+    const groups: {
+      translations: { languageCode: LanguageCode; name: string }[];
+      code: string;
+      values: string[];
+    }[] = [];
+
+    IMPORT_OPTION_GROUPS.forEach((attribute) => {
+      const columnKey = attribute.columnKeys.find(inRecord);
+      if (columnKey && record[columnKey]) {
+        const value = record[columnKey];
+        if (typeof value !== "string") {
+          throw new Error(
+            `Spalte ${column} auf Zeile ${index} enthält nicht einen ungültigen Wert!`
+          );
+        }
+
+        groups.push({
+          translations: attribute.translations,
+          code: attribute.code,
+          values: parentId ? [value] : value.split(SEPERATOR),
+        });
+      }
+    });
+
+    const optionCodes: string[] = [];
+
+    //add extracted option groups and values (and its translations)
+    for (const group of groups) {
+      const optionGroup = optionGroups.find((g) => g.code === group.code);
+
+      if (optionGroup) {
+        for (const value of group.values) {
+          const exactMatch = optionGroup.options.find((option) =>
+            option.translations.find(
+              (t) => t.name.trim().toLowerCase() === value.trim().toLowerCase()
+            )
+          );
+
+          const untranslated = optionGroup.options.filter(
+            (o) => !o.translations.find((t) => t.languageCode === languageCode)
+          );
+
+          const option =
+            exactMatch ||
+            (untranslated.length === 0
+              ? null
+              : await selection(
+                  `Es konnte nicht automatisch entschieden werden, ob die Option
+[${languageCode}]: "${value}" in der Kategorie ${
+                    optionGroup.code
+                  }: ${optionGroup.translations.map(
+                    (t) => `[${t.languageCode}]: "${t.name}"`
+                  )} bereits existiert.
+Wählen Sie die entsprechende Option aus.`,
+                  optionGroup.options,
+                  (o: typeof optionGroup.options[0]) =>
+                    `${o.code}, ${o.translations.map(
+                      (t) => `[${t.languageCode}]: ${t.name}`
+                    )}`,
+                  true
+                ));
+
+          if (option) {
+            if (
+              !option.translations.find((t) => t.languageCode === languageCode)
+            ) {
+              option.translations.push({ languageCode, name: value });
+            }
+
+            optionCodes.push(option.code);
+          } else {
+            const code = slugify(value, SLUGIFY_OPTIONS);
+            optionGroup.options.push({
+              code,
+              translations: [{ languageCode, name: value }],
+            });
+
+            optionCodes.push(code);
+          }
+        }
+      } else {
+        //not found yet, add it
+        const options = group.values.map((value) => ({
+          code: slugify(value, SLUGIFY_OPTIONS),
+          translations: [{ languageCode, name: value }],
+        }));
+
+        optionGroups.push({
+          code: group.code,
+          translations: group.translations,
+          options,
+        });
+
+        optionCodes.push(...options.map((o) => o.code));
+      }
+    }
+
+    const facetValueCodes: string[] = [];
+
+    //add category facets
+    for (const c of categories) {
+      const f = facets.find((f) => f.code === CATEGORY_FACET_CODE);
+
+      if (f) {
+        const exactMatch = f.values.find((v) =>
+          v.translations.find(
+            (t) => t.name.trim().toLowerCase() === c.trim().toLowerCase()
+          )
+        );
+
+        const untranslated = f.values.filter(
+          (v) => !v.translations.find((t) => t.languageCode === languageCode)
+        );
+        const v =
+          exactMatch ||
+          (untranslated.length === 0
+            ? null
+            : await selection(
+                `Es konnte nicht automatisch entschieden werden, ob die Kategorie [${languageCode}]: "${c}" bereits existiert.
+Wählen Sie die entsprechende Option aus.`,
+                f.values,
+                (v) =>
+                  `${v.code}, ${v.translations
+                    .map((t) => `[${t.languageCode}]: ${t.name}`)
+                    .join(", ")}`,
+                true
+              ));
+
+        if (v) {
+          if (!v.translations.find((t) => t.languageCode === languageCode)) {
+            v.translations.push({ languageCode, name: c });
+          }
+          facetValueCodes.push(v.code);
+        } else {
+          const code = slugify(c, SLUGIFY_OPTIONS);
+          f.values.push({
+            code,
+            translations: [{ languageCode, name: c }],
+          });
+          facetValueCodes.push(code);
+        }
+      } else {
+        const code = slugify(c, SLUGIFY_OPTIONS);
+
+        facets.push({
+          code: CATEGORY_FACET_CODE,
+          translations: [], //this facet should already exist
+          values: [
+            {
+              code,
+              translations: [{ languageCode, name: c }],
+            },
+          ],
+        });
+
+        facetValueCodes.push(code);
+      }
+    }
+
+    //add reseller discount category facets
+    for (const c of resellerDiscountCategories) {
+      const f = facets.find((f) => f.code === RESELLER_DISCOUNT_FACET_CODE);
+
+      if (f) {
+        const exactMatch = f.values.find((v) =>
+          v.translations.find(
+            (t) => t.name.trim().toLowerCase() === c.trim().toLowerCase()
+          )
+        );
+
+        const untranslated = f.values.filter(
+          (v) => !v.translations.find((t) => t.languageCode === languageCode)
+        );
+
+        const v =
+          exactMatch ||
+          (untranslated.length === 0
+            ? null
+            : await selection(
+                `Es konnte nicht automatisch entschieden werden, ob die Rabattgruppe [${languageCode}]: "${c}" bereits existiert.
+Wählen Sie die entsprechende Option aus.`,
+                f.values,
+                (v) =>
+                  `${v.code}, ${v.translations
+                    .map((t) => `[${t.languageCode}]: ${t.name}`)
+                    .join(", ")}`,
+                true
+              ));
+
+        if (v) {
+          v.translations.push({ languageCode, name: c });
+          facetValueCodes.push(v.code);
+        } else {
+          const code = slugify(c, SLUGIFY_OPTIONS);
+          f.values.push({
+            code,
+            translations: [{ languageCode, name: c }],
           });
 
-          if ("Produktgruppe_Shop" in productData) {
-            const groupName: string = productData["Produktgruppe_Shop"].trim();
+          facetValueCodes.push(code);
+        }
+      } else {
+        const code = slugify(c, SLUGIFY_OPTIONS);
 
-            if (!(groupName in products)) {
-              const attributes: AttributeFacet[] = EXCEL_ATTRIBUTES.filter(
-                ({ columnKey }) => columnKey in productData
-              ).map((attribute) => ({
-                name: attribute.name,
-                values: [productData[attribute.columnKey]],
-              }));
+        facets.push({
+          code: RESELLER_DISCOUNT_FACET_CODE,
+          translations: [], //this facet should already exist
+          values: [
+            {
+              code,
+              translations: [{ languageCode, name: c }],
+            },
+          ],
+        });
 
-              const facets: Facet[] = [];
+        facetValueCodes.push(code);
+      }
+    }
 
-              //Check for discount keys
-              for (let column in productData) {
-                if (column.indexOf("_Rabattberechtigt") !== -1) {
-                  const f = facets.find(
-                    (f) => f.code === RESELLER_DISCOUNT_FACET_CODE
-                  );
-                  if (f) {
-                    f.values.push(column.replace("_Rabattberechtigt", ""));
-                  } else {
-                    facets.push({
-                      code: RESELLER_DISCOUNT_FACET_CODE,
-                      values: [column.replace("_Rabattberechtigt", "")],
-                    });
-                  }
-                }
-              }
+    if (parentId === null) {
+      const product = products
+        .filter((p) => p.translationId)
+        .find((p) => p.translationId === translationId);
 
-              //create parent product of type variable
-              products[groupName] = {
-                sku: groupName,
-                name: productData["Artikelname_neu"].trim() || "",
-                description: "",
-                width: parseFloat(productData["Breite"]) || 0,
-                height: parseFloat(productData["Höhe"]) || 0,
-                length: 0,
-                images: [],
-                upsells: [],
-                crosssells: [],
-                order: 0,
-                categories: productData["Thema"] ? [productData["Thema"]] : [],
-                facets,
-                attributes,
-                bulkDiscount: false,
-                children: [],
-              };
-            } else {
-              //verify
+      if (product) {
+        //this product is a translation!
+        product.translations.push({ languageCode, slug, name, description });
+      } else {
+        products.push({
+          sku,
+          translationId,
+          slug,
+          translations: [{ languageCode, slug, name, description }],
+          length,
+          width,
+          height,
+          order: 0,
+          //image urls or filenames
+          assets,
+          upsellsGroupSKUs: upSells,
+          crosssellsGroupSKUs: crossSells,
+          optionGroupCodes: groups.map((g) => g.code),
+          facetValueCodes,
+          children: [],
+        });
+      }
+    } else {
+      //this is a variation
 
-              let p: string[] = products[groupName].attributes
-                .map((a) => a.name.toLocaleLowerCase())
-                .sort();
-              let v: string[] = variant.attributes
-                .map((a) => a.name.toLocaleLowerCase())
-                .sort();
+      variants.push({
+        parentId,
+        sku,
+        price,
+        //image urls or filenames
+        assets,
+        minimumOrderQuantity,
+        bulkDiscounts,
+        facetValueCodes,
+        optionCodes,
+        //product properties
+        translationId,
+        slug,
+        translations: [{ languageCode, slug, name, description }],
+        length,
+        width,
+        height,
+        order: 0,
+        upsellsGroupSKUs: upSells,
+        crosssellsGroupSKUs: crossSells,
+        optionGroupCodes: groups.map((g) => g.code),
+        children: [],
+      });
+    }
+  }
 
-              if (
-                p.length !== v.length ||
-                !(p
-                  .map((name, index) => name === v[index].toLocaleLowerCase())
-                  .reduce((a, b) => a && b),
-                true)
-              ) {
-                throw new Error(
-                  `Das Produkt auf Zeile ${index} wird ignoriert, da die Attribute [${v.join(
-                    ","
-                  )}]{${v.length}} (Variante) und [${p.join(",")}]{${
-                    p.length
-                  }} nicht gleich sind."`
-                );
-              }
+  //almost done, now we have to create products for all unmatched variants
+  for (const variant of variants) {
+    //look for parent
+    const parent = products.find((p) => p.id === variant.parentId);
 
-              //add different variants to the parent
-              variant.attributes.forEach((attribute) => {
-                const a = products[groupName].attributes.find(
-                  (a) => a.name === attribute.name
-                );
-                if (a && !a.values.includes(attribute.value)) {
-                  a.values.push(attribute.value);
-                }
-              });
-              products[groupName].children.push(variant);
-            }
-          } else {
-            throw new Error(
-              "Produkte ohne Produktgruppen werden momentan nicht unterstützt."
+    if (parent) {
+      parent.facetValueCodes = parent.facetValueCodes.filter(
+        (facetValueCode) => {
+          if (!variant.facetValueCodes.includes(facetValueCode)) {
+            //this is a facet value code not all variants have
+
+            //assign it to all individual variants that have it
+            parent.children.forEach((v) =>
+              v.facetValueCodes.push(facetValueCode)
             );
+            //remove it from the parent
+            return false;
           }
 
-          /*if ("Artikel_Bilder_Code" in productData) {
-            product.imageCode = productData["Artikel_Bilder_Code"];
-          } else {
-            throw new Error(
-              `Das Produkt auf Zeile ${index} wird ignoriert, da es kein Bild besitzt!`
-            );
-          }*/
-        } catch (e) {
-          console.log("Error", e.message);
+          return true;
         }
-      });
-  });
+      );
 
-  return products;
+      variant.facetValueCodes = variant.facetValueCodes.filter(
+        (facetValueCode) => {
+          if (parent.facetValueCodes.includes(facetValueCode)) {
+            //is already in the parent, can be removed from variant
+            return false;
+          }
+          return true;
+        }
+      );
+
+      parent.children.push(variant);
+    } else {
+      products.push({
+        sku: variant.parentId,
+        translationId: variant.translationId,
+        slug: variant.slug,
+        translations: variant.translations,
+        length: variant.length,
+        width: variant.width,
+        height: variant.height,
+        order: variant.order,
+        //image urls or filenames
+        assets: variant.assets,
+        upsellsGroupSKUs: variant.upsellsGroupSKUs,
+        crosssellsGroupSKUs: variant.crosssellsGroupSKUs,
+        optionGroupCodes: variant.optionGroupCodes,
+        facetValueCodes: variant.facetValueCodes,
+        children: [{ ...variant, facetValueCodes: [] }],
+      });
+    }
+  }
+
+  return { products, optionGroups, facets };
 };
 
 export const hasAllOptionGroups = (
-  variant: ProductVariant,
+  variant: ProductVariantPrototype,
   variants: { sku: string; options: { code: string }[] }[]
 ) => {
   const v = variants.find((v) => v.sku === variant.sku);
@@ -542,10 +685,7 @@ export const hasAllOptionGroups = (
     );
   }
   const missingOptions = v.options.filter(
-    (o) =>
-      !variant.attributes.find(
-        (a) => o.code === slugify(a.value, SLUGIFY_OPTIONS)
-      )
+    (o) => !variant.optionCodes.find((c) => o.code === c)
   );
 
   return missingOptions.length === 0;

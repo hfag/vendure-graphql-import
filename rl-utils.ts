@@ -60,16 +60,32 @@ export const assertConfirm = async (
   }
 };
 
-export const selection = async <T>(options: T[]) => {
+export const selection = async <T>(
+  text: string,
+  options: T[],
+  mapOption: (option: T) => any = (e: T) => e,
+  allowNone = false
+) => {
+  console.log(text);
+  options.forEach((option, index) =>
+    console.log(`${index}) `, mapOption(option))
+  );
+  if (allowNone) {
+    console.log(`${options.length}) Nichts davon.`);
+  }
   let answer = parseInt(await rlQuestion(`Auswahl: `));
-  while (isNaN(answer) || answer < 0 || answer >= options.length) {
+  while (
+    isNaN(answer) ||
+    answer < 0 ||
+    answer >= (allowNone ? options.length + 1 : options.length)
+  ) {
     console.log(
       `Diese Antwort ist ungültig. Wähle eine Zahl zwischen 0 und ${
-        options.length - 1
+        allowNone ? options.length : options.length - 1
       }`
     );
     answer = parseInt(await rlQuestion(`Auswahl: `));
   }
 
-  return options[answer];
+  return options[answer] || null;
 };
