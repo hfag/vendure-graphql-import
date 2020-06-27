@@ -10,7 +10,8 @@
     "sourceMap": false,
     "outDir": "./dist",
     "baseUrl": "./",
-    "strictPropertyInitialization": false
+    "strictPropertyInitialization": false,
+    "resolveJsonModule": true
   },
   "exclude": ["node_modules"]
 }

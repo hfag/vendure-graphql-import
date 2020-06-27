@@ -51,7 +51,6 @@ export interface OptionGroup {
 export interface ProductPrototype {
   id?: ID;
   sku: string;
-  slug: string;
   translations: {
     languageCode: LanguageCode;
     name: string;
@@ -69,6 +68,7 @@ export interface ProductPrototype {
   optionGroupCodes: ID[];
   facetValueCodes: string[];
   children: ProductVariantPrototype[];
+  childrenOptionCodes: string[];
 }
 
 export interface BulkDiscount {

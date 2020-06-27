@@ -169,7 +169,19 @@ export const getFacets = async (
       facets{
         items{
           id
-          name
+          code
+          translations {
+            languageCode
+            name
+          }
+          values{
+            id
+            code
+            translations {
+              languageCode
+              name
+            }
+          }
         }
       }
     }`
@@ -466,9 +478,55 @@ export const createOrUpdateFacets = async (
         updateFacetValues(graphQLClient, u),
       ]);
 
-      return facet;
+      return getFacet(graphQLClient, facet.id);
     })
   );
+};
+
+export const getFacet = async (
+  graphQLClient: GraphQLClient,
+  id: ID
+): Promise<DeepRequired<Facet>> => {
+  const response: {
+    facet: {
+      id: ID;
+      code: string;
+      translations: {
+        languageCode: LanguageCode;
+        name: string;
+      }[];
+      values: {
+        id: ID;
+        code: string;
+        translations: {
+          languageCode: LanguageCode;
+          name: string;
+        }[];
+      }[];
+    };
+  } = await graphQLClient.request(
+    `query Facet($id: ID!) {
+      facet(id: $id){
+        id
+        code
+        translations {
+          languageCode
+          name
+        }
+        values{
+          id
+          code
+          translations {
+            languageCode
+            name
+          }
+        }
+      }
+    }`,
+    { id }
+  );
+
+  return response.facet;
 };
 
 export const createFacet = async (
@@ -855,9 +913,49 @@ export const createOrUpdateOptionGroups = async (
         createProductOptions(graphQLClient, group.id, c),
       ]);
 
-      return group;
+      return getOptionGroup(graphQLClient, group.id);
     })
   );
+};
+
+export const getOptionGroup = async (
+  graphQLClient: GraphQLClient,
+  id: ID
+): Promise<DeepRequired<OptionGroup>> => {
+  const optionGroupsResponse: {
+    productOptionGroup: {
+      id: string;
+      code: string;
+      translations: { languageCode: LanguageCode; name: string }[];
+      options: {
+        id: string;
+        code: string;
+        translations: { languageCode: LanguageCode; name: string }[];
+      }[];
+    };
+  } = await graphQLClient.request(
+    `query ProductOptionGroup(id: ID!){
+      productOptionGroup(id: $id){
+        id
+        code
+        translations {
+          languageCode
+          name
+        }
+        options{
+          id
+          code
+          translations {
+            languageCode
+            name
+          }
+        }
+      }
+    }`,
+    { id }
+  );
+
+  return optionGroupsResponse.productOptionGroup;
 };
 
 export const createOptionGroup = async (

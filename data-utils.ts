@@ -1,5 +1,4 @@
 import slugify from "slugify";
-import XLSX from "xlsx";
 import {
   Record,
   ProductPrototype,
@@ -10,6 +9,8 @@ import {
   ID,
   LanguageCode,
   OptionGroup,
+  Option,
+  FacetValue,
 } from "./types";
 import {
   IMPORT_OPTION_GROUPS,
@@ -48,6 +49,70 @@ const getFloatingPointValue = <T>(
     return value;
   } else {
     return fallback;
+  }
+};
+
+const findItemByUnknownLocaleString = async <
+  ObjectTranslation extends { languageCode: LanguageCode; name: string },
+  Obj extends { code: string; translations: ObjectTranslation[] },
+  ItemTranslation extends { languageCode: LanguageCode; name: string },
+  Item extends { code: string; translations: ItemTranslation[] }
+>(
+  object: Obj,
+  value: string,
+  languageCode: LanguageCode,
+  objectToItems: (object: Obj) => Item[],
+  suggestions: Item[] = []
+): Promise<Item | null> => {
+  const items = objectToItems(object);
+  const v = value.trim().toLowerCase();
+
+  suggestions = suggestions.filter(
+    (s) =>
+      !s.translations.find((t) => t.languageCode === languageCode) ||
+      s.translations.find((t) => t.name.trim().toLowerCase() === v)
+  );
+
+  const betterSuggestions = suggestions.filter((s) =>
+    s.translations.find((t) => t.name.trim().toLowerCase() === v)
+  );
+
+  const matches =
+    suggestions.length > 0
+      ? betterSuggestions.length > 0
+        ? betterSuggestions
+        : suggestions
+      : items.filter((item) =>
+          item.translations.find((t) => v === t.name.trim().toLowerCase())
+        );
+
+  const untranslated = items.filter(
+    (o) => !o.translations.find((t) => t.languageCode === languageCode)
+  );
+
+  if (matches.length === 1) {
+    return matches[0];
+  } else if (untranslated.length === 0) {
+    //no potential translations
+    return null;
+  } else {
+    const s = await selection(
+      `Es konnte nicht automatisch entschieden werden, ob die Option
+[${languageCode}]: "${value}" in der Kategorie ${
+        object.code
+      }: ${object.translations.map(
+        (t) => `[${t.languageCode}]: "${t.name}"`
+      )} bereits existiert.
+Wählen Sie die entsprechende Option aus.`,
+      matches.length > 0 ? matches : items, //if we had multiple matches, present them. otherwise show all options
+      (o) =>
+        `${o.code}, ${o.translations.map(
+          (t) => `[${t.languageCode}]: "${t.name}"`
+        )}`,
+      true
+    );
+
+    return s;
   }
 };
 
@@ -373,35 +438,36 @@ export const tableToProducts = async (
 
       if (optionGroup) {
         for (const value of group.values) {
-          const exactMatch = optionGroup.options.find((option) =>
-            option.translations.find(
-              (t) => t.name.trim().toLowerCase() === value.trim().toLowerCase()
-            )
-          );
+          let suggestions: Option[] = [];
 
-          const untranslated = optionGroup.options.filter(
-            (o) => !o.translations.find((t) => t.languageCode === languageCode)
-          );
+          if (translationId) {
+            const existingVariant = variants.find(
+              (v) => v.translationId === translationId
+            );
 
-          const option =
-            exactMatch ||
-            (untranslated.length === 0
-              ? null
-              : await selection(
-                  `Es konnte nicht automatisch entschieden werden, ob die Option
-[${languageCode}]: "${value}" in der Kategorie ${
-                    optionGroup.code
-                  }: ${optionGroup.translations.map(
-                    (t) => `[${t.languageCode}]: "${t.name}"`
-                  )} bereits existiert.
-Wählen Sie die entsprechende Option aus.`,
-                  optionGroup.options,
-                  (o: typeof optionGroup.options[0]) =>
-                    `${o.code}, ${o.translations.map(
-                      (t) => `[${t.languageCode}]: ${t.name}`
-                    )}`,
-                  true
-                ));
+            if (existingVariant) {
+              suggestions = optionGroup.options.filter((i) =>
+                existingVariant.optionCodes.includes(i.code)
+              );
+            } else {
+              const existingProduct = products.find(
+                (p) => p.translationId === translationId
+              );
+              if (existingProduct) {
+                suggestions = optionGroup.options.filter((i) =>
+                  existingProduct.childrenOptionCodes.includes(i.code)
+                );
+              }
+            }
+          }
+
+          const option = await findItemByUnknownLocaleString(
+            optionGroup,
+            value,
+            languageCode,
+            (optionGroup) => optionGroup.options,
+            suggestions
+          );
 
           if (option) {
             if (
@@ -445,29 +511,35 @@ Wählen Sie die entsprechende Option aus.`,
       const f = facets.find((f) => f.code === CATEGORY_FACET_CODE);
 
       if (f) {
-        const exactMatch = f.values.find((v) =>
-          v.translations.find(
-            (t) => t.name.trim().toLowerCase() === c.trim().toLowerCase()
-          )
-        );
+        let suggestions: FacetValue[] = [];
+        if (translationId) {
+          const existingVariant = variants.find(
+            (v) => v.translationId === translationId
+          );
 
-        const untranslated = f.values.filter(
-          (v) => !v.translations.find((t) => t.languageCode === languageCode)
+          if (existingVariant) {
+            suggestions = f.values.filter((v) =>
+              existingVariant.facetValueCodes.includes(v.code)
+            );
+          } else {
+            const existingProduct = products.find(
+              (p) => p.translationId === translationId
+            );
+            if (existingProduct) {
+              suggestions = f.values.filter((v) =>
+                existingProduct.facetValueCodes.includes(v.code)
+              );
+            }
+          }
+        }
+
+        const v = await findItemByUnknownLocaleString(
+          f,
+          c,
+          languageCode,
+          (facet) => facet.values,
+          suggestions
         );
-        const v =
-          exactMatch ||
-          (untranslated.length === 0
-            ? null
-            : await selection(
-                `Es konnte nicht automatisch entschieden werden, ob die Kategorie [${languageCode}]: "${c}" bereits existiert.
-Wählen Sie die entsprechende Option aus.`,
-                f.values,
-                (v) =>
-                  `${v.code}, ${v.translations
-                    .map((t) => `[${t.languageCode}]: ${t.name}`)
-                    .join(", ")}`,
-                true
-              ));
 
         if (v) {
           if (!v.translations.find((t) => t.languageCode === languageCode)) {
@@ -483,20 +555,8 @@ Wählen Sie die entsprechende Option aus.`,
           facetValueCodes.push(code);
         }
       } else {
-        const code = slugify(c, SLUGIFY_OPTIONS);
-
-        facets.push({
-          code: CATEGORY_FACET_CODE,
-          translations: [], //this facet should already exist
-          values: [
-            {
-              code,
-              translations: [{ languageCode, name: c }],
-            },
-          ],
-        });
-
-        facetValueCodes.push(code);
+        console.error(`Facet ${CATEGORY_FACET_CODE} is required to exist!`);
+        process.exit(-1);
       }
     }
 
@@ -505,30 +565,35 @@ Wählen Sie die entsprechende Option aus.`,
       const f = facets.find((f) => f.code === RESELLER_DISCOUNT_FACET_CODE);
 
       if (f) {
-        const exactMatch = f.values.find((v) =>
-          v.translations.find(
-            (t) => t.name.trim().toLowerCase() === c.trim().toLowerCase()
-          )
-        );
+        let suggestions: FacetValue[] = [];
+        if (translationId) {
+          const existingVariant = variants.find(
+            (v) => v.translationId === translationId
+          );
 
-        const untranslated = f.values.filter(
-          (v) => !v.translations.find((t) => t.languageCode === languageCode)
-        );
+          if (existingVariant) {
+            suggestions = f.values.filter((v) =>
+              existingVariant.facetValueCodes.includes(v.code)
+            );
+          } else {
+            const existingProduct = products.find(
+              (p) => p.translationId === translationId
+            );
+            if (existingProduct) {
+              suggestions = f.values.filter((v) =>
+                existingProduct.facetValueCodes.includes(v.code)
+              );
+            }
+          }
+        }
 
-        const v =
-          exactMatch ||
-          (untranslated.length === 0
-            ? null
-            : await selection(
-                `Es konnte nicht automatisch entschieden werden, ob die Rabattgruppe [${languageCode}]: "${c}" bereits existiert.
-Wählen Sie die entsprechende Option aus.`,
-                f.values,
-                (v) =>
-                  `${v.code}, ${v.translations
-                    .map((t) => `[${t.languageCode}]: ${t.name}`)
-                    .join(", ")}`,
-                true
-              ));
+        const v = await findItemByUnknownLocaleString(
+          f,
+          c,
+          languageCode,
+          (facet) => facet.values,
+          suggestions
+        );
 
         if (v) {
           v.translations.push({ languageCode, name: c });
@@ -543,27 +608,17 @@ Wählen Sie die entsprechende Option aus.`,
           facetValueCodes.push(code);
         }
       } else {
-        const code = slugify(c, SLUGIFY_OPTIONS);
-
-        facets.push({
-          code: RESELLER_DISCOUNT_FACET_CODE,
-          translations: [], //this facet should already exist
-          values: [
-            {
-              code,
-              translations: [{ languageCode, name: c }],
-            },
-          ],
-        });
-
-        facetValueCodes.push(code);
+        console.error(
+          `Facet ${RESELLER_DISCOUNT_FACET_CODE} is required to exist!`
+        );
+        process.exit(-1);
       }
     }
 
     if (parentId === null) {
-      const product = products
-        .filter((p) => p.translationId)
-        .find((p) => p.translationId === translationId);
+      const product = products.find(
+        (p) => p.translationId && p.translationId === translationId
+      );
 
       if (product) {
         //this product is a translation!
@@ -572,7 +627,6 @@ Wählen Sie die entsprechende Option aus.`,
         products.push({
           sku,
           translationId,
-          slug,
           translations: [{ languageCode, slug, name, description }],
           length,
           width,
@@ -585,34 +639,44 @@ Wählen Sie die entsprechende Option aus.`,
           optionGroupCodes: groups.map((g) => g.code),
           facetValueCodes,
           children: [],
+          childrenOptionCodes: optionCodes,
         });
       }
     } else {
       //this is a variation
 
-      variants.push({
-        parentId,
-        sku,
-        price,
-        //image urls or filenames
-        assets,
-        minimumOrderQuantity,
-        bulkDiscounts,
-        facetValueCodes,
-        optionCodes,
-        //product properties
-        translationId,
-        slug,
-        translations: [{ languageCode, slug, name, description }],
-        length,
-        width,
-        height,
-        order: 0,
-        upsellsGroupSKUs: upSells,
-        crosssellsGroupSKUs: crossSells,
-        optionGroupCodes: groups.map((g) => g.code),
-        children: [],
-      });
+      const variant = variants.find(
+        (v) => v.translationId && v.translationId === translationId
+      );
+
+      if (variant) {
+        //we already got this variant, just add translations
+        variant.translations.push({ languageCode, name, slug, description });
+      } else {
+        variants.push({
+          parentId,
+          sku,
+          price,
+          //image urls or filenames
+          assets,
+          minimumOrderQuantity,
+          bulkDiscounts,
+          facetValueCodes,
+          optionCodes,
+          //product properties
+          translationId,
+          translations: [{ languageCode, slug, name, description }],
+          length,
+          width,
+          height,
+          order: 0,
+          upsellsGroupSKUs: upSells,
+          crosssellsGroupSKUs: crossSells,
+          optionGroupCodes: groups.map((g) => g.code),
+          children: [],
+          childrenOptionCodes: [],
+        });
+      }
     }
   }
 
@@ -650,11 +714,11 @@ Wählen Sie die entsprechende Option aus.`,
       );
 
       parent.children.push(variant);
+      parent.childrenOptionCodes.push(...variant.optionCodes);
     } else {
       products.push({
         sku: variant.parentId,
         translationId: variant.translationId,
-        slug: variant.slug,
         translations: variant.translations,
         length: variant.length,
         width: variant.width,
@@ -667,6 +731,7 @@ Wählen Sie die entsprechende Option aus.`,
         optionGroupCodes: variant.optionGroupCodes,
         facetValueCodes: variant.facetValueCodes,
         children: [{ ...variant, facetValueCodes: [] }],
+        childrenOptionCodes: variant.optionCodes,
       });
     }
   }

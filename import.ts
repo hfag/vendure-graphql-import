@@ -1,8 +1,6 @@
 import * as fs from "fs";
-import slugify from "slugify";
 import parse from "csv-parse/lib/sync";
 import XLSX from "xlsx";
-const util = require("util");
 import { GraphQLClient } from "graphql-request";
 
 import {
@@ -79,6 +77,7 @@ if (process.argv.length < 4) {
 }
 
 let records: Record[];
+let json: any = null;
 
 if (process.argv[2].endsWith(".csv")) {
   console.log("Importiere aus CSV");
@@ -93,7 +92,7 @@ if (process.argv[2].endsWith(".csv")) {
   records = XLSX.utils.sheet_to_json(workbook.Sheets[sheetNameList[0]]);
 } else if (process.argv[2].endsWith(".json")) {
   console.log("Importiere aus JSON-Datei");
-  records = JSON.parse(fs.readFileSync(process.argv[2], { encoding: "utf-8" }));
+  json = JSON.parse(fs.readFileSync(process.argv[2], { encoding: "utf-8" }));
 } else {
   throw new Error("Entweder .csv, .json .xlsx Dateien!");
 }
@@ -119,16 +118,88 @@ async function main() {
 
   let products: ProductPrototype[] = [];
 
-  const r = await tableToProducts(records, o, f);
+  const r: {
+    products: (ProductPrototype & {
+      translationId?: string | number | undefined;
+    })[];
+    optionGroups: OptionGroup[];
+    facets: Facet[];
+  } = json ? json : await tableToProducts(records, o, f);
   products = r.products;
   o = r.optionGroups;
   f = r.facets;
 
-  if (process.argv[3].endsWith(".json")) {
-    console.log("Schreibe JSON Ausgabe: " + process.argv[3]);
-    fs.writeFileSync(process.argv[3], JSON.stringify(products));
+  if (process.argv[4] && process.argv[4].endsWith(".json")) {
+    console.log("Schreibe JSON Ausgabe: " + process.argv[4]);
+    fs.writeFileSync(process.argv[4], JSON.stringify(r));
     process.exit(0);
   }
+
+  console.log("Validiere Produkte...");
+  //products only require the german translation
+  const untranslatedProducts = products.filter(
+    (p) => !p.translations.find((t) => t.languageCode === "de")
+  );
+
+  if (untranslatedProducts.length > 0) {
+    console.error(
+      `Folgende ${untranslatedProducts.length} Produkte haben unvollständige Übersetzungen:`
+    );
+    untranslatedProducts.forEach((p) =>
+      console.log(
+        `${p.sku} (${
+          "translationId" in p ? p["translationId"] : ""
+        }): ${p.translations
+          .map((t) => `[${t.languageCode}: "${t.name}"]`)
+          .join(", ")}`
+      )
+    );
+    process.exit(-1);
+  }
+
+  console.log("Validiere Optionsgruppen...");
+  const untranslatedOptiongroups = o.filter(
+    (group) =>
+      !["de", "fr"].every((lang) =>
+        group.translations.find((t) => t.languageCode === lang)
+      )
+  );
+
+  if (untranslatedOptiongroups.length > 0) {
+    console.error(
+      "Folgende Optionsgruppen haben unvollständige Übersetzungen:"
+    );
+    untranslatedOptiongroups.forEach((f) =>
+      console.log(
+        `${f.code}: ${f.translations
+          .map((t) => `[${t.languageCode}: "${t.name}"]`)
+          .join(", ")}`
+      )
+    );
+    process.exit(-1);
+  }
+
+  console.log("Validiere Facetten...");
+  const untranslatedFacets = f.filter(
+    (facet) =>
+      !["de", "fr"].every((lang) =>
+        facet.translations.find((t) => t.languageCode === lang)
+      )
+  );
+
+  if (untranslatedFacets.length > 0) {
+    console.error("Folgende Facetten haben unvollständige Übersetzungen:");
+    untranslatedFacets.forEach((f) =>
+      console.log(
+        `${f.code}: ${f.translations
+          .map((t) => `[${t.languageCode}: "${t.name}"]`)
+          .join(", ")}`
+      )
+    );
+    process.exit(-1);
+  }
+
+  await assertConfirm("Parsen beendet. Beginne Import?");
 
   const skuToProductId = await getExistingProducts(
     graphQLClient,
