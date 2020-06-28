@@ -120,6 +120,7 @@ export const getCollections = async (
           languageCode: LanguageCode;
           name: string;
           description: string;
+          slug: string;
         }[];
       }[];
     };
@@ -133,6 +134,7 @@ export const getCollections = async (
             languageCode
             name
             description
+            slug
           }
         }
       }
@@ -196,7 +198,8 @@ export const createCategoryCollection = async (
     translations: {
       languageCode: LanguageCode;
       name: string;
-      description?: string;
+      description: string;
+      slug: string;
     }[];
   },
   facetValueIds: ID[],
@@ -208,7 +211,7 @@ export const createCategoryCollection = async (
       name: string;
     };
   } = await graphQLClient.request(
-    `mutation Collections($input: CreateCollectionInput!){
+    `mutation CreateCollection($input: CreateCollectionInput!){
       createCollection(input: $input){
         id
         name
@@ -216,6 +219,7 @@ export const createCategoryCollection = async (
     }`,
     {
       input: {
+        parentId: 1,
         isPrivate,
         translations: collection.translations,
         filters: [
@@ -840,7 +844,7 @@ export const getOptionGroups = async (
 
 export const getOptionGroupsByProductId = async (
   graphQLClient: GraphQLClient,
-  productId: string
+  productId: ID
 ): Promise<Required<OptionGroup>[]> => {
   const optionGroupsResponse: {
     product: {
@@ -886,36 +890,52 @@ export const getOptionGroupsByProductId = async (
 
 export const createOrUpdateOptionGroups = async (
   graphQLClient: GraphQLClient,
-  optionGroups: OptionGroup[]
+  optionGroups: OptionGroup[],
+  productId: ID
 ): Promise<DeepRequired<OptionGroup>[]> => {
-  return Promise.all(
-    optionGroups.map(async (g) => {
-      let group: DeepRequired<OptionGroup>;
-      if (g.id) {
-        group = await updateOptionGroup(graphQLClient, { ...g, id: g.id });
-      } else {
-        group = await createOptionGroup(graphQLClient, g);
-      }
-
-      const u: DeepRequired<Option>[] = [];
-      const c: Option[] = [];
-
-      g.options.forEach((o) => {
-        if (o.id) {
-          return u.push({ ...o, id: o.id });
-        } else {
-          c.push(o);
-        }
-      });
-
-      await Promise.all([
-        updateProductOptions(graphQLClient, group.id, u),
-        createProductOptions(graphQLClient, group.id, c),
-      ]);
-
-      return getOptionGroup(graphQLClient, group.id);
-    })
+  const existingOptionGroups = await getOptionGroupsByProductId(
+    graphQLClient,
+    productId
   );
+
+  const response: DeepRequired<OptionGroup>[] = [];
+
+  for (const g of optionGroups) {
+    let group: DeepRequired<OptionGroup>;
+    const existingGroup = existingOptionGroups.find((g) => g.code === g.code);
+
+    if (existingGroup) {
+      group = await updateOptionGroup(graphQLClient, {
+        ...g,
+        id: existingGroup.id,
+      });
+    } else {
+      group = await createOptionGroup(graphQLClient, g);
+      await assignOptionGroupToProduct(graphQLClient, productId, group.id);
+    }
+
+    const u: DeepRequired<Option>[] = [];
+    const c: Option[] = [];
+
+    g.options.forEach((option) => {
+      const existingOption = group.options.find((o) => o.code === option.code);
+
+      if (existingOption) {
+        return u.push({ ...option, id: existingOption.id });
+      } else {
+        c.push(option);
+      }
+    });
+
+    await Promise.all([
+      updateProductOptions(graphQLClient, u),
+      createProductOptions(graphQLClient, group.id, c),
+    ]);
+
+    response.push(await getOptionGroup(graphQLClient, group.id));
+  }
+
+  return response;
 };
 
 export const getOptionGroup = async (
@@ -934,7 +954,7 @@ export const getOptionGroup = async (
       }[];
     };
   } = await graphQLClient.request(
-    `query ProductOptionGroup(id: ID!){
+    `query ProductOptionGroup($id: ID!){
       productOptionGroup(id: $id){
         id
         code
@@ -1051,11 +1071,14 @@ export const assignOptionGroupToProduct = async (
   optionGroupId: ID
 ) => {
   const productOptionGroupAssignmentResponse: {
-    addOptionGroupToProduct: { id: ID };
+    addOptionGroupToProduct: { id: ID; optionGroups: { id: ID }[] };
   } = await graphQLClient.request(
     `mutation AddOptionGroupToProduct($productId: ID!, $optionGroupId: ID!){
       addOptionGroupToProduct(productId: $productId, optionGroupId: $optionGroupId){
         id
+        optionGroups{
+          id
+        }
       }
     }`,
     {
@@ -1105,7 +1128,6 @@ export const createProductOptions = async (
 
 export const updateProductOptions = async (
   graphQLClient: GraphQLClient,
-  optionGroupId: ID,
   options: DeepRequired<Option>[]
 ): Promise<DeepRequired<Option>[]> => {
   return Promise.all(
@@ -1130,7 +1152,6 @@ export const updateProductOptions = async (
         {
           input: {
             id: option.id,
-            productOptionGroupId: optionGroupId,
             code: option.code,
             translations: option.translations,
           },

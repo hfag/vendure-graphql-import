@@ -50,6 +50,7 @@ export interface OptionGroup {
 
 export interface ProductPrototype {
   id?: ID;
+  previousIds: ID[];
   sku: string;
   translations: {
     languageCode: LanguageCode;
@@ -65,10 +66,9 @@ export interface ProductPrototype {
   assets: string[];
   upsellsGroupSKUs: ID[];
   crosssellsGroupSKUs: ID[];
-  optionGroupCodes: ID[];
+  optionGroups: OptionGroup[];
   facetValueCodes: string[];
   children: ProductVariantPrototype[];
-  childrenOptionCodes: string[];
 }
 
 export interface BulkDiscount {
@@ -84,7 +84,7 @@ export interface ProductVariantPrototype {
   minimumOrderQuantity: number;
   bulkDiscounts: BulkDiscount[];
   facetValueCodes: string[];
-  optionCodes: string[];
+  optionCodes: [string, string][];
 }
 
 export type ProductVariantUpdate = {

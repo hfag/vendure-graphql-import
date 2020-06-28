@@ -12,15 +12,11 @@ import {
 } from "./rl-utils";
 
 import {
-  uploadFilesToGraphql,
   getExistingProducts,
   assertAuthentication,
   getOptionGroups,
-  getOptionGroupsByProductId,
   createProduct,
-  createOptionGroup,
   assignOptionGroupToProduct,
-  createProductOptions,
   getExistingProductVariants,
   deleteProductVariants,
   createProductVariants,
@@ -28,19 +24,16 @@ import {
   updateProductVariantBulkDiscounts,
   getCollections,
   updateProduct,
-  getFacetValues,
-  createFacetValues,
   createCategoryCollection,
-  findOrCreateFacetValues,
-  findOrCreateFacet,
   updateProductCrosssells,
   updateProductUpsells,
-  getAssetsIdByName,
   findOrCreateAssets,
   getFacets,
-  createFacet,
   createOrUpdateOptionGroups,
   createOrUpdateFacets,
+  createOptionGroup,
+  createProductOptions,
+  getOptionGroup,
 } from "./graphql-utils";
 import {
   SLUGIFY_OPTIONS,
@@ -48,26 +41,20 @@ import {
   tableToProducts,
 } from "./data-utils";
 import {
-  downloadFile,
-  cleanDownloads,
-  downloadFiles,
-  notEmpty,
-  getFilenameFromUrl,
-} from "./utils";
-import {
   OptionGroup,
   ProductVariantCreation,
   ProductVariantUpdate,
   ProductPrototype,
-  AttributeFacet,
   Facet,
   ID,
   Record,
-  FacetValue,
 } from "./types";
-import { IMPORT_OPTION_GROUPS } from "./data-utils/attributes";
 import { DeepRequired } from "ts-essentials";
 import { CATEGORY_FACET_CODE } from "./data-utils/facets";
+import slugify from "slugify";
+import cliProgress from "cli-progress";
+import util from "util";
+import { UV_FS_O_FILEMAP } from "constants";
 
 if (process.argv.length < 4) {
   console.error(
@@ -114,7 +101,6 @@ async function main() {
   });
 
   let f: Facet[] = await getFacets(graphQLClient);
-  let o: OptionGroup[] = await getOptionGroups(graphQLClient);
 
   let products: ProductPrototype[] = [];
 
@@ -122,11 +108,9 @@ async function main() {
     products: (ProductPrototype & {
       translationId?: string | number | undefined;
     })[];
-    optionGroups: OptionGroup[];
     facets: Facet[];
-  } = json ? json : await tableToProducts(records, o, f);
+  } = json ? json : await tableToProducts(records, f);
   products = r.products;
-  o = r.optionGroups;
   f = r.facets;
 
   if (process.argv[4] && process.argv[4].endsWith(".json")) {
@@ -136,48 +120,39 @@ async function main() {
   }
 
   console.log("Validiere Produkte...");
-  //products only require the german translation
-  const untranslatedProducts = products.filter(
-    (p) => !p.translations.find((t) => t.languageCode === "de")
-  );
+  products.forEach((p) => {
+    if (!p.translations.find((t) => t.languageCode === "de")) {
+      console.log(util.inspect(p, { showHidden: false, depth: null }));
+      console.error(`Produkt ist nicht auf Deutsch übersetzt.`);
+      process.exit(-1);
+    }
 
-  if (untranslatedProducts.length > 0) {
-    console.error(
-      `Folgende ${untranslatedProducts.length} Produkte haben unvollständige Übersetzungen:`
-    );
-    untranslatedProducts.forEach((p) =>
-      console.log(
-        `${p.sku} (${
-          "translationId" in p ? p["translationId"] : ""
-        }): ${p.translations
-          .map((t) => `[${t.languageCode}: "${t.name}"]`)
-          .join(", ")}`
-      )
-    );
-    process.exit(-1);
-  }
+    p.optionGroups.forEach((group) => {
+      if (
+        !["de", "fr"].every((lang) =>
+          group.translations.find((t) => t.languageCode === lang)
+        )
+      ) {
+        console.log(p.sku);
+        console.log(util.inspect(group, { showHidden: false, depth: null }));
+        console.error(`Optionsgruppe ist nicht übersetzt.`);
+        process.exit(-1);
+      }
 
-  console.log("Validiere Optionsgruppen...");
-  const untranslatedOptiongroups = o.filter(
-    (group) =>
-      !["de", "fr"].every((lang) =>
-        group.translations.find((t) => t.languageCode === lang)
-      )
-  );
-
-  if (untranslatedOptiongroups.length > 0) {
-    console.error(
-      "Folgende Optionsgruppen haben unvollständige Übersetzungen:"
-    );
-    untranslatedOptiongroups.forEach((f) =>
-      console.log(
-        `${f.code}: ${f.translations
-          .map((t) => `[${t.languageCode}: "${t.name}"]`)
-          .join(", ")}`
-      )
-    );
-    process.exit(-1);
-  }
+      group.options.forEach((o) => {
+        if (
+          !["de"].every((lang) =>
+            o.translations.find((t) => t.languageCode === lang)
+          )
+        ) {
+          console.log(p.sku);
+          console.log(util.inspect(o, { showHidden: false, depth: null }));
+          console.error(`Option ist nicht übersetzt.`);
+          process.exit(-1);
+        }
+      });
+    });
+  });
 
   console.log("Validiere Facetten...");
   const untranslatedFacets = f.filter(
@@ -204,29 +179,6 @@ async function main() {
   const skuToProductId = await getExistingProducts(
     graphQLClient,
     products.map((p) => p.sku)
-  );
-
-  console.log(`Erstelle Optionsgruppen`);
-  const optionGroups: DeepRequired<
-    OptionGroup
-  >[] = await createOrUpdateOptionGroups(graphQLClient, o);
-
-  const optionGroupCodeToId: { [key: string]: ID } = optionGroups.reduce(
-    (obj: { [key: string]: ID }, group) => {
-      obj[group.code] = group.id;
-      return obj;
-    },
-    {}
-  );
-
-  const optionCodeToId: { [key: string]: ID } = optionGroups.reduce(
-    (obj: { [key: string]: ID }, group) => {
-      return group.options.reduce((obj: { [key: string]: ID }, option) => {
-        obj[option.code] = option.id;
-        return obj;
-      }, obj);
-    },
-    {}
   );
 
   console.log(`Erstelle Kategorien (Facetten und Kollektionen)`);
@@ -274,7 +226,13 @@ async function main() {
           .map((cat) =>
             createCategoryCollection(
               graphQLClient,
-              { translations: cat.translations },
+              {
+                translations: cat.translations.map((t) => ({
+                  description: "",
+                  slug: slugify(t.name, SLUGIFY_OPTIONS),
+                  ...t,
+                })),
+              },
               [cat.id]
             )
           )
@@ -282,28 +240,35 @@ async function main() {
 
   console.log(`Importiere insgesamt ${products.length} Produkte.`);
 
+  const loadingBar = new cliProgress.SingleBar(
+    {},
+    cliProgress.Presets.shades_classic
+  );
+
+  loadingBar.start(products.length, 0);
+
   for (const p of products) {
     //we need to find a fitting product type
     let productId = skuToProductId[p.sku];
 
     if (typeof productId === "string") {
       p.id = productId;
-      const pr = <Required<ProductPrototype>>p;
+      const pr = <DeepRequired<ProductPrototype>>p;
 
-      await assertConfirm(
-        `Produkt "${
-          p.translations.find((t) => t.languageCode == "de")?.name
-        }" (${p.sku}) existiert bereits und wird aktualisiert.`,
-        "y"
-      );
+      // await assertConfirm(
+      //   `Produkt "${
+      //     p.translations.find((t) => t.languageCode == "de")?.name
+      //   }" (${p.sku}) existiert bereits und wird aktualisiert.`,
+      //   "y"
+      // );
 
       await updateProduct(graphQLClient, pr, facetValueCodeToId);
     } else {
-      await assertConfirm(
-        `Produkt "${
-          p.translations.find((t) => t.languageCode === "de")?.name
-        }" (${p.sku}) existiert noch nicht und wird neu erstellt.`
-      );
+      // await assertConfirm(
+      //   `Produkt "${
+      //     p.translations.find((t) => t.languageCode === "de")?.name
+      //   }" (${p.sku}) existiert noch nicht und wird neu erstellt.`
+      // );
 
       skuToProductId[p.sku] = await createProduct(
         graphQLClient,
@@ -314,157 +279,207 @@ async function main() {
       );
 
       productId = skuToProductId[p.sku];
+      p.id = productId;
     }
 
-    const product = <Required<ProductPrototype>>p;
+    const product = <DeepRequired<ProductPrototype>>p;
 
-    await Promise.all(
-      product.optionGroupCodes.map((code) =>
-        assignOptionGroupToProduct(
-          graphQLClient,
-          product.id,
-          optionGroupCodeToId[code]
-        )
-      )
-    );
+    try {
+      const optionGroups: DeepRequired<
+        OptionGroup
+      >[] = await createOrUpdateOptionGroups(
+        graphQLClient,
+        product.optionGroups,
+        product.id
+      );
 
-    const { variants, variantSkuToId } = await getExistingProductVariants(
-      graphQLClient,
-      productId
-    );
+      const { variants, variantSkuToId } = await getExistingProductVariants(
+        graphQLClient,
+        product.id
+      );
 
-    const variantsToDelete = variants
-      .filter((v) => !product.children.find((p) => p.sku === v.sku))
-      .map((v) => v.id);
+      const variantsToDelete = variants
+        .filter((v) => !product.children.find((p) => p.sku === v.sku))
+        .map((v) => v.id);
 
-    const variantUpdates: ProductVariantUpdate[] = [];
-    const variantCreations: ProductVariantCreation[] = [];
-    const variantBulkDiscounts: {
-      sku: string;
-      discounts: { quantity: number; price: number }[];
-    }[] = [];
+      const variantUpdates: ProductVariantUpdate[] = [];
+      const variantCreations: ProductVariantCreation[] = [];
+      const variantBulkDiscounts: {
+        sku: string;
+        discounts: { quantity: number; price: number }[];
+      }[] = [];
 
-    for (const variant of product.children) {
-      let variantId = variantSkuToId[variant.sku];
-      let exists = variantId ? true : false;
+      for (const variant of product.children) {
+        let variantId = variantSkuToId[variant.sku];
+        let exists = variantId ? true : false;
 
-      if (exists && hasAllOptionGroups(variant, variants)) {
-        variantUpdates.push({
-          id: variantId,
-          translations: product.translations.map((t) => ({
-            languageCode: t.languageCode,
-            name: t.name,
-          })),
-          facetValueIds: variant.facetValueCodes.map(
-            (code) => facetValueCodeToId[code]
-          ),
-          sku: variant.sku,
-          price: variant.price,
-          taxCategoryId: 1,
-          trackInventory: false,
-          customFields: {
-            bulkDiscountEnabled: variant.bulkDiscounts.length > 0,
-            minimumOrderQuantity: variant.minimumOrderQuantity,
-          },
-        });
-      } else {
-        //option groups don't match, delete it and create new one
-        if (exists) {
-          variantsToDelete.push(variantId);
+        if (exists && hasAllOptionGroups(variant, variants)) {
+          variantUpdates.push({
+            id: variantId,
+            translations: product.translations.map((t) => ({
+              languageCode: t.languageCode,
+              name: t.name,
+            })),
+            facetValueIds: variant.facetValueCodes.map(
+              (code) => facetValueCodeToId[code]
+            ),
+            sku: variant.sku,
+            price: variant.price,
+            taxCategoryId: 1,
+            trackInventory: false,
+            customFields: {
+              bulkDiscountEnabled: variant.bulkDiscounts.length > 0,
+              minimumOrderQuantity: variant.minimumOrderQuantity,
+            },
+          });
+        } else {
+          //option groups don't match, delete it and create new one
+          if (exists) {
+            variantsToDelete.push(variantId);
+          }
+
+          const assetIds = await findOrCreateAssets(
+            graphQLClient,
+            endpoint,
+            token,
+            variant.assets
+          );
+
+          const missingOptions = product.optionGroups.filter(
+            (g) =>
+              !variant.optionCodes.find(
+                ([groupCode, optionCode]) =>
+                  groupCode === g.code &&
+                  g.options.find((o) => o.code === optionCode)
+              )
+          );
+
+          if (missingOptions.length > 0) {
+            throw new Error(
+              `Variante ${
+                variant.sku
+              } fehlt eine Option in den Gruppen ${missingOptions
+                .map((o) => o.code)
+                .join(", ")}`
+            );
+          }
+
+          variantCreations.push({
+            productId,
+            translations: product.translations.map((t) => ({
+              languageCode: t.languageCode,
+              name: t.name,
+            })),
+            facetValueIds: variant.facetValueCodes.map(
+              (code) => facetValueCodeToId[code]
+            ),
+            sku: variant.sku,
+            price: variant.price,
+            taxCategoryId: 1,
+            optionIds: variant.optionCodes.map(([groupCode, optionCode]) => {
+              const g = optionGroups.find((g) => g.code === groupCode);
+              if (!g) {
+                throw new Error(
+                  `Es konnte keine Optionsgruppe ${groupCode} in [${optionGroups
+                    .map((g) => g.code)
+                    .join(", ")}] gefunden werden`
+                );
+              }
+              const o = g.options.find((o) => o.code === optionCode);
+              if (!o) {
+                throw new Error(
+                  `Es konnte keine Option ${optionCode} in [${g.options
+                    .map((o) => o.code)
+                    .join(", ")}] gefunden werden`
+                );
+              }
+              return o.id;
+            }),
+            featuredAssetId: assetIds[0],
+            assetIds,
+            // stockOnHand: null,
+            trackInventory: false,
+            customFields: {
+              bulkDiscountEnabled: variant.bulkDiscounts.length > 0,
+              minimumOrderQuantity: variant.minimumOrderQuantity,
+            },
+          });
         }
 
-        const assetIds = await findOrCreateAssets(
-          graphQLClient,
-          endpoint,
-          token,
-          variant.assets
-        );
-
-        variantCreations.push({
-          productId,
-          translations: product.translations.map((t) => ({
-            languageCode: t.languageCode,
-            name: t.name,
-          })),
-          facetValueIds: variant.facetValueCodes.map(
-            (code) => facetValueCodeToId[code]
-          ),
+        variantBulkDiscounts.push({
           sku: variant.sku,
-          price: variant.price * 100,
-          taxCategoryId: 1,
-          optionIds: variant.optionCodes.map((code) => optionCodeToId[code]),
-          featuredAssetId: assetIds[0],
-          assetIds,
-          // stockOnHand: null,
-          trackInventory: false,
-          customFields: {
-            bulkDiscountEnabled: variant.bulkDiscounts.length > 0,
-            minimumOrderQuantity: variant.minimumOrderQuantity,
-          },
+          discounts: variant.bulkDiscounts,
         });
       }
 
-      variantBulkDiscounts.push({
-        sku: variant.sku,
-        discounts: variant.bulkDiscounts,
+      // console.log(
+      //   `Lösche ${variantsToDelete.length} Produktvarianten von ${
+      //     product.translations.find((t) => t.languageCode === "de")?.name
+      //   } (${product.sku}):`
+      // );
+
+      await deleteProductVariants(graphQLClient, variantsToDelete);
+
+      // console.log(
+      //   `Erstelle ${variantCreations.length} neue Produktvarianten für das Produkt ${product.sku}:`
+      // );
+      // console.log(
+      //   "Artikelnummern: " + variantCreations.map((c) => c.sku).join(", ")
+      // );
+
+      const newVariants = await createProductVariants(
+        graphQLClient,
+        variantCreations
+      );
+
+      newVariants.forEach((v) => {
+        variantSkuToId[v.sku] = v.id;
       });
+
+      // console.log(
+      //   `Aktualisiere ${variantUpdates.length} Produktvarianten für das Produkt ${product.sku}:`
+      // );
+      // console.log("SKUs: " + variantUpdates.map((c) => c.sku).join(", "));
+
+      await updateProductVariants(graphQLClient, variantUpdates);
+
+      // console.log(
+      //   `Aktualisiere die Mengenrabatte für alle erstellten und aktualisierten Produktvarianten`
+      // );
+
+      await updateProductVariantBulkDiscounts(
+        graphQLClient,
+        variantBulkDiscounts.map(({ sku, discounts }) => ({
+          productVariantId: variantSkuToId[sku],
+          discounts,
+        }))
+      );
+
+      //prevent server overload
+      await new Promise((resolve, reject) => setTimeout(resolve, 500));
+
+      loadingBar.increment();
+    } catch (e) {
+      console.error("Ein Fehler bei folgendem Produkt ist aufgetreten:");
+      console.error(util.inspect(product, { showHidden: false, depth: null }));
+      console.error("SKU:", product.sku);
+      throw e;
     }
-
-    console.log(
-      `Lösche ${variantsToDelete.length} Produktvarianten von ${
-        product.translations.find((t) => t.languageCode === "de")?.name
-      } (${product.sku}):`
-    );
-
-    await deleteProductVariants(graphQLClient, variantsToDelete);
-
-    console.log(
-      `Erstelle ${variantCreations.length} neue Produktvarianten für das Produkt ${product.sku}:`
-    );
-    console.log(
-      "Artikelnummern: " + variantCreations.map((c) => c.sku).join(", ")
-    );
-
-    const newVariants = await createProductVariants(
-      graphQLClient,
-      variantCreations
-    );
-
-    newVariants.forEach((v) => {
-      variantSkuToId[v.sku] = v.id;
-    });
-
-    console.log(
-      `Aktualisiere ${variantUpdates.length} Produktvarianten für das Produkt ${product.sku}:`
-    );
-    console.log("SKUs: " + variantUpdates.map((c) => c.sku).join(", "));
-
-    await updateProductVariants(graphQLClient, variantUpdates);
-
-    console.log(
-      `Aktualisiere die Mengenrabatte für alle erstellten und aktualisierten Produktvarianten`
-    );
-
-    await updateProductVariantBulkDiscounts(
-      graphQLClient,
-      variantBulkDiscounts.map(({ sku, discounts }) => ({
-        productVariantId: variantSkuToId[sku],
-        discounts,
-      }))
-    );
   }
+  loadingBar.stop();
 
   console.log("Füge nun noch die Verlinkungen (Cross- und Upsells) ein.");
 
   const crosssells: { productId: ID; productIds: ID[] }[] = [];
   const upsells: { productId: ID; productIds: ID[] }[] = [];
 
-  for (const sku in products) {
+  for (const product of products) {
     //we need to find a fitting product type
-    const product = products[sku];
+    const productId = skuToProductId[product.sku];
+
     if (product.crosssellsGroupSKUs.length > 0) {
       crosssells.push({
-        productId: skuToProductId[sku],
+        productId,
         productIds: product.crosssellsGroupSKUs.map(
           (sku) => skuToProductId[sku]
         ),
@@ -472,7 +487,7 @@ async function main() {
     }
     if (product.upsellsGroupSKUs.length > 0) {
       upsells.push({
-        productId: skuToProductId[sku],
+        productId,
         productIds: product.upsellsGroupSKUs.map((sku) => skuToProductId[sku]),
       });
     }

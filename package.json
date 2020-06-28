@@ -3,10 +3,12 @@
     "start": "ts-node import.ts"
   },
   "dependencies": {
+    "@types/cli-progress": "^3.7.0",
     "@types/form-data": "^2.5.0",
     "@types/node": "^14.0.4",
     "@types/node-fetch": "^2.5.7",
     "@types/rimraf": "^3.0.0",
+    "cli-progress": "^3.8.2",
     "csv": "^5.3.2",
     "form-data": "^3.0.0",
     "graphql-request": "^1.8.2",

@@ -26,6 +26,14 @@ export const SLUGIFY_OPTIONS = { lower: true, strict: true };
 export const SEPERATOR = "|";
 export const HIERARCHY_SEPERATOR = ">";
 
+function pick<T, K extends keyof T>(obj: T, ...keys: K[]): Pick<T, K> {
+  const copy = {} as Pick<T, K>;
+
+  keys.forEach((key) => (copy[key] = obj[key]));
+
+  return copy;
+}
+
 const getIntegerValue = <T>(
   value: string | number | undefined,
   fallback: T
@@ -116,11 +124,7 @@ Wählen Sie die entsprechende Option aus.`,
   }
 };
 
-export const tableToProducts = async (
-  records: Record[],
-  optionGroups: OptionGroup[],
-  facets: Facet[]
-) => {
+export const tableToProducts = async (records: Record[], facets: Facet[]) => {
   const products: (ProductPrototype & { translationId?: ID })[] = [];
   const variants: (ProductVariantPrototype &
     ProductPrototype & { parentId: string; translationId?: ID })[] = [];
@@ -290,12 +294,14 @@ export const tableToProducts = async (
     column = IMPORT_ATTRIBUTE_COLUMNS.upSells.find(inRecord);
     const upSellsField = column && record[column];
     const upSells =
-      typeof upSellsField === "string" ? upSellsField.split(SEPERATOR) : [];
+      typeof upSellsField === "string" && upSellsField.length > 0
+        ? upSellsField.split(SEPERATOR)
+        : [];
 
     column = IMPORT_ATTRIBUTE_COLUMNS.crossSells.find(inRecord);
     const crossSellsField = column && record[column];
     const crossSells =
-      typeof crossSellsField === "string"
+      typeof crossSellsField === "string" && crossSellsField.length > 0
         ? crossSellsField.split(SEPERATOR)
         : [];
 
@@ -375,7 +381,12 @@ export const tableToProducts = async (
           throw new Error();
         }
 
-        bulkDiscounts = JSON.parse(bulkDiscountsField);
+        bulkDiscounts = JSON.parse(bulkDiscountsField).map(
+          ({ qty, ppu }: { qty: string | number; ppu: string | number }) => ({
+            quantity: parseInt(qty.toString()),
+            price: Math.floor(parseFloat(ppu.toString()) * 100),
+          })
+        );
       } catch (e) {
         throw new Error(
           `Spalte ${column} auf Zeile ${index} enthält nicht eine gültige JSON-Codierung von Mengenrabatt!`
@@ -405,12 +416,52 @@ export const tableToProducts = async (
     }
     //end dirty stuff
 
+    if (parentId === null) {
+      const product = products.find(
+        (p) => p.translationId && p.translationId === translationId
+      );
+
+      if (product) {
+        //just add translations
+        product.translations.push({
+          languageCode,
+          name,
+          slug,
+          description,
+        });
+        product.previousIds.push(id);
+      } else {
+        products.push({
+          previousIds: [id],
+          translationId,
+          sku,
+          translations: [
+            {
+              languageCode,
+              name,
+              slug,
+              description,
+            },
+          ],
+          length,
+          width,
+          height,
+          order: 0,
+          //image urls or filenames
+          assets,
+          upsellsGroupSKUs: upSells,
+          crosssellsGroupSKUs: crossSells,
+          optionGroups: [],
+          facetValueCodes: [],
+          children: [],
+        });
+      }
+      //no need for option groups etc
+      continue;
+    }
+
     //import option groups
-    const groups: {
-      translations: { languageCode: LanguageCode; name: string }[];
-      code: string;
-      values: string[];
-    }[] = [];
+    const groups: OptionGroup[] = [];
 
     IMPORT_OPTION_GROUPS.forEach((attribute) => {
       const columnKey = attribute.columnKeys.find(inRecord);
@@ -425,84 +476,15 @@ export const tableToProducts = async (
         groups.push({
           translations: attribute.translations,
           code: attribute.code,
-          values: parentId ? [value] : value.split(SEPERATOR),
+          options: (parentId ? [value] : value.split(SEPERATOR)).map(
+            (name) => ({
+              code: slugify(name, SLUGIFY_OPTIONS),
+              translations: [{ languageCode, name }],
+            })
+          ),
         });
       }
     });
-
-    const optionCodes: string[] = [];
-
-    //add extracted option groups and values (and its translations)
-    for (const group of groups) {
-      const optionGroup = optionGroups.find((g) => g.code === group.code);
-
-      if (optionGroup) {
-        for (const value of group.values) {
-          let suggestions: Option[] = [];
-
-          if (translationId) {
-            const existingVariant = variants.find(
-              (v) => v.translationId === translationId
-            );
-
-            if (existingVariant) {
-              suggestions = optionGroup.options.filter((i) =>
-                existingVariant.optionCodes.includes(i.code)
-              );
-            } else {
-              const existingProduct = products.find(
-                (p) => p.translationId === translationId
-              );
-              if (existingProduct) {
-                suggestions = optionGroup.options.filter((i) =>
-                  existingProduct.childrenOptionCodes.includes(i.code)
-                );
-              }
-            }
-          }
-
-          const option = await findItemByUnknownLocaleString(
-            optionGroup,
-            value,
-            languageCode,
-            (optionGroup) => optionGroup.options,
-            suggestions
-          );
-
-          if (option) {
-            if (
-              !option.translations.find((t) => t.languageCode === languageCode)
-            ) {
-              option.translations.push({ languageCode, name: value });
-            }
-
-            optionCodes.push(option.code);
-          } else {
-            const code = slugify(value, SLUGIFY_OPTIONS);
-            optionGroup.options.push({
-              code,
-              translations: [{ languageCode, name: value }],
-            });
-
-            optionCodes.push(code);
-          }
-        }
-      } else {
-        //not found yet, add it
-        const options = group.values.map((value) => ({
-          code: slugify(value, SLUGIFY_OPTIONS),
-          translations: [{ languageCode, name: value }],
-        }));
-
-        optionGroups.push({
-          code: group.code,
-          translations: group.translations,
-          options,
-        });
-
-        optionCodes.push(...options.map((o) => o.code));
-      }
-    }
 
     const facetValueCodes: string[] = [];
 
@@ -521,15 +503,6 @@ export const tableToProducts = async (
             suggestions = f.values.filter((v) =>
               existingVariant.facetValueCodes.includes(v.code)
             );
-          } else {
-            const existingProduct = products.find(
-              (p) => p.translationId === translationId
-            );
-            if (existingProduct) {
-              suggestions = f.values.filter((v) =>
-                existingProduct.facetValueCodes.includes(v.code)
-              );
-            }
           }
         }
 
@@ -575,15 +548,6 @@ export const tableToProducts = async (
             suggestions = f.values.filter((v) =>
               existingVariant.facetValueCodes.includes(v.code)
             );
-          } else {
-            const existingProduct = products.find(
-              (p) => p.translationId === translationId
-            );
-            if (existingProduct) {
-              suggestions = f.values.filter((v) =>
-                existingProduct.facetValueCodes.includes(v.code)
-              );
-            }
           }
         }
 
@@ -615,75 +579,89 @@ export const tableToProducts = async (
       }
     }
 
-    if (parentId === null) {
-      const product = products.find(
-        (p) => p.translationId && p.translationId === translationId
-      );
+    //this is a variant
+    const variant = variants.find(
+      (v) => v.translationId && v.translationId === translationId
+    );
 
-      if (product) {
-        //this product is a translation!
-        product.translations.push({ languageCode, slug, name, description });
-      } else {
-        products.push({
-          sku,
-          translationId,
-          translations: [{ languageCode, slug, name, description }],
-          length,
-          width,
-          height,
-          order: 0,
-          //image urls or filenames
-          assets,
-          upsellsGroupSKUs: upSells,
-          crosssellsGroupSKUs: crossSells,
-          optionGroupCodes: groups.map((g) => g.code),
-          facetValueCodes,
-          children: [],
-          childrenOptionCodes: optionCodes,
-        });
-      }
+    if (variant) {
+      //we already got this variant, just add translations
+      variant.translations.push({ languageCode, name, slug, description });
+      variant.optionGroups.forEach((group) => {
+        const g = groups.find((g) => g.code === group.code);
+        if (!g) {
+          if (
+            group.options.length !== 1 ||
+            group.options[0].translations.length === 0
+          ) {
+            throw new Error(
+              `Variante ${sku} (${translationId}) auf Zeile ${index} besitzt keinen Wert für ${group.code} obwohl eine andere Übersetzung dies hat.`
+            );
+          }
+          //this translations doesn't have a value but the original translation does. use the first value
+          group.options[0].translations.push({
+            languageCode,
+            name: group.options[0].translations[0].name,
+          });
+          return;
+        }
+
+        //the next two checks are just there as a sanity check, this should actually never be violated
+
+        if (group.options.length !== 1) {
+          throw new Error(
+            `Variante ${variant.sku} besitzt ${group.options.length} Werte für ${group.code}, sollte aber nur einen haben!`
+          );
+        }
+
+        if (g.options.length !== 1) {
+          throw new Error(
+            `Variante ${sku} auf Zeile ${index} besitzt ${g.options.length} Werte für ${group.code}, sollte aber nur einen haben!`
+          );
+        }
+
+        group.options[0].translations.push(...g.options[0].translations);
+      });
     } else {
-      //this is a variation
-
-      const variant = variants.find(
-        (v) => v.translationId && v.translationId === translationId
-      );
-
-      if (variant) {
-        //we already got this variant, just add translations
-        variant.translations.push({ languageCode, name, slug, description });
-      } else {
-        variants.push({
-          parentId,
-          sku,
-          price,
-          //image urls or filenames
-          assets,
-          minimumOrderQuantity,
-          bulkDiscounts,
-          facetValueCodes,
-          optionCodes,
-          //product properties
-          translationId,
-          translations: [{ languageCode, slug, name, description }],
-          length,
-          width,
-          height,
-          order: 0,
-          upsellsGroupSKUs: upSells,
-          crosssellsGroupSKUs: crossSells,
-          optionGroupCodes: groups.map((g) => g.code),
-          children: [],
-          childrenOptionCodes: [],
-        });
-      }
+      variants.push({
+        previousIds: [id],
+        parentId,
+        sku,
+        price: Math.floor(price * 100),
+        //image urls or filenames
+        assets,
+        minimumOrderQuantity,
+        bulkDiscounts,
+        facetValueCodes,
+        optionCodes: groups.map((g) => {
+          if (g.options.length !== 1) {
+            throw new Error(
+              `Variante ${sku} auf Zeile ${index} besitzt ${g.options.length} Werte für ${g.code}, sollte aber nur einen haben!`
+            );
+          }
+          return [g.code, g.options[0].code];
+        }),
+        //product properties
+        translationId,
+        translations: [{ languageCode, slug, name, description }],
+        length,
+        width,
+        height,
+        order: 0,
+        upsellsGroupSKUs: upSells,
+        crosssellsGroupSKUs: crossSells,
+        optionGroups: groups,
+        children: [],
+      });
     }
   }
 
   //almost done, now we have to create products for all unmatched variants
   for (const variant of variants) {
     //look for parent
-    const parent = products.find((p) => p.id === variant.parentId);
+    const parent = products.find((p) =>
+      p.previousIds.includes(variant.parentId)
+    );
 
     if (parent) {
       parent.facetValueCodes = parent.facetValueCodes.filter(
@@ -713,10 +691,53 @@ export const tableToProducts = async (
         }
       );
 
+      if (parent.children.length === 0) {
+        parent.optionGroups = variant.optionGroups;
+      } else {
+        parent.optionGroups.forEach((group) => {
+          //all variants are required to have this group
+          const g = variant.optionGroups.find((g) => g.code === group.code);
+
+          if (!g) {
+            if (group.options.length === 1) {
+              variant.optionGroups.push(group);
+              variant.optionCodes.push([group.code, group.options[0].code]);
+              return;
+            }
+
+            console.log(parent.optionGroups);
+            console.log(
+              parent.children.map((c) => ({
+                sku: c.sku,
+                optionCodes: c.optionCodes
+                  .map((c) => `(${(c[0], c[1])})`)
+                  .join(", "),
+              }))
+            );
+            throw new Error(
+              `Variante ${variant.sku} besitzt keinen Wert für ${
+                group.code
+              } aber einer von ${group.options.map(
+                (o) => o.code
+              )} wird verlangt!`
+            );
+          }
+          if (g.options.length !== 1) {
+            throw new Error(
+              `Variante ${variant.sku} besitzt ${g.options.length} Werte (≠1) für ${group.code}!`
+            );
+          }
+
+          if (!group.options.find((o) => o.code === g.options[0].code)) {
+            group.options.push(g.options[0]);
+          }
+        });
+      }
+
       parent.children.push(variant);
-      parent.childrenOptionCodes.push(...variant.optionCodes);
     } else {
       products.push({
+        previousIds: [variant.parentId],
         sku: variant.parentId,
         translationId: variant.translationId,
         translations: variant.translations,
@@ -728,15 +749,14 @@ export const tableToProducts = async (
         assets: variant.assets,
         upsellsGroupSKUs: variant.upsellsGroupSKUs,
         crosssellsGroupSKUs: variant.crosssellsGroupSKUs,
-        optionGroupCodes: variant.optionGroupCodes,
+        optionGroups: variant.optionGroups,
         facetValueCodes: variant.facetValueCodes,
         children: [{ ...variant, facetValueCodes: [] }],
-        childrenOptionCodes: variant.optionCodes,
       });
     }
   }
 
-  return { products, optionGroups, facets };
+  return { products, facets };
 };
 
 export const hasAllOptionGroups = (
@@ -750,7 +770,10 @@ export const hasAllOptionGroups = (
     );
   }
   const missingOptions = v.options.filter(
-    (o) => !variant.optionCodes.find((c) => o.code === c)
+    (o) =>
+      !variant.optionCodes.find(
+        ([groupCode, optionCode]) => o.code === optionCode
+      )
   );
 
   return missingOptions.length === 0;
