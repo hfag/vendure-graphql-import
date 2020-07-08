@@ -54,7 +54,7 @@ import { CATEGORY_FACET_CODE } from "./data-utils/facets";
 import slugify from "slugify";
 import cliProgress from "cli-progress";
 import util from "util";
-import { UV_FS_O_FILEMAP } from "constants";
+import { notEmpty } from "./utils";
 
 if (process.argv.length < 4) {
   console.error(
@@ -480,15 +480,37 @@ async function main() {
     if (product.crosssellsGroupSKUs.length > 0) {
       crosssells.push({
         productId,
-        productIds: product.crosssellsGroupSKUs.map(
-          (sku) => skuToProductId[sku]
-        ),
+        productIds: product.crosssellsGroupSKUs
+          .map((sku) => {
+            if (sku in skuToProductId) {
+              return skuToProductId[sku];
+            }
+
+            console.log(
+              `Crosssell Verlinkung von Produkt ${product.sku} (${productId}) zu ${sku} ist fehlgeschlagen. Diese kann noch manuell eingefügt werden.`
+            );
+
+            return null;
+          })
+          .filter(notEmpty),
       });
     }
     if (product.upsellsGroupSKUs.length > 0) {
       upsells.push({
         productId,
-        productIds: product.upsellsGroupSKUs.map((sku) => skuToProductId[sku]),
+        productIds: product.upsellsGroupSKUs
+          .map((sku) => {
+            if (sku in skuToProductId) {
+              return skuToProductId[sku];
+            }
+
+            console.log(
+              `Upsell Verlinkung von Produkt ${product.sku} (${productId}) zu ${sku} ist fehlgeschlagen. Diese kann noch manuell eingefügt werden.`
+            );
+
+            return null;
+          })
+          .filter(notEmpty),
       });
     }
   }
@@ -497,6 +519,9 @@ async function main() {
     updateProductCrosssells(graphQLClient, crosssells),
     updateProductUpsells(graphQLClient, upsells),
   ]);
+
+  console.log("Fertig!");
+  process.exit(0);
 }
 
 main().catch((error) => {

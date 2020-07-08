@@ -125,7 +125,10 @@ Wählen Sie die entsprechende Option aus.`,
 };
 
 export const tableToProducts = async (records: Record[], facets: Facet[]) => {
-  const products: (ProductPrototype & { translationId?: ID })[] = [];
+  const products: (ProductPrototype & {
+    translationId?: ID;
+    initialVariantSku?: ID;
+  })[] = [];
   const variants: (ProductVariantPrototype &
     ProductPrototype & { parentId: string; translationId?: ID })[] = [];
 
@@ -681,18 +684,31 @@ export const tableToProducts = async (records: Record[], facets: Facet[]) => {
         }
       );
 
-      variant.facetValueCodes = variant.facetValueCodes.filter(
-        (facetValueCode) => {
-          if (parent.facetValueCodes.includes(facetValueCode)) {
-            //is already in the parent, can be removed from variant
-            return false;
-          }
-          return true;
+      variant.facetValueCodes.forEach((facetValueCode) => {
+        if (
+          parent.children.reduce(
+            (b, variant) =>
+              b && variant.facetValueCodes.includes(facetValueCode),
+            true
+          )
+        ) {
+          //new facetValueCode that all variants have, transfer to parent
+          parent.facetValueCodes.push(facetValueCode);
+          parent.children.forEach((v) => {
+            v.facetValueCodes = v.facetValueCodes.filter(
+              (c) => c !== facetValueCode
+            );
+          });
         }
+      });
+
+      variant.facetValueCodes = variant.facetValueCodes.filter(
+        (facetValueCode) => !parent.facetValueCodes.includes(facetValueCode)
       );
 
       if (parent.children.length === 0) {
         parent.optionGroups = variant.optionGroups;
+        parent.initialVariantSku = variant.sku;
       } else {
         parent.optionGroups.forEach((group) => {
           //all variants are required to have this group
@@ -732,12 +748,36 @@ export const tableToProducts = async (records: Record[], facets: Facet[]) => {
             group.options.push(g.options[0]);
           }
         });
+        variant.optionGroups.forEach((group) => {
+          const g = parent.optionGroups.find((g) => g.code === group.code);
+          if (!g) {
+            throw new Error(
+              `Variante ${variant.sku} besitzt Optionsgruppe ${group.code}, das übergeordnete Produkt ${parent.sku} (${parent.initialVariantSku}) aber nicht!`
+            );
+          }
+
+          group.options.forEach((option) => {
+            const o = g.options.find((o) => o.code === option.code);
+            if (!o) {
+              `Variante ${variant.sku} besitzt Option ${option.code} in Gruppe ${group.code}, das übergeordnete Produkt ${parent.sku} (${parent.initialVariantSku}) aber nicht!`;
+            }
+          });
+        });
       }
 
-      parent.children.push(variant);
+      parent.children.push({
+        sku: variant.sku,
+        price: variant.price,
+        assets: variant.assets,
+        minimumOrderQuantity: variant.minimumOrderQuantity,
+        bulkDiscounts: variant.bulkDiscounts,
+        facetValueCodes: variant.facetValueCodes,
+        optionCodes: variant.optionCodes,
+      });
     } else {
       products.push({
         previousIds: [variant.parentId],
+        initialVariantSku: variant.sku,
         sku: variant.parentId,
         translationId: variant.translationId,
         translations: variant.translations,
@@ -751,7 +791,17 @@ export const tableToProducts = async (records: Record[], facets: Facet[]) => {
         crosssellsGroupSKUs: variant.crosssellsGroupSKUs,
         optionGroups: variant.optionGroups,
         facetValueCodes: variant.facetValueCodes,
-        children: [{ ...variant, facetValueCodes: [] }],
+        children: [
+          {
+            sku: variant.sku,
+            price: variant.price,
+            assets: variant.assets,
+            minimumOrderQuantity: variant.minimumOrderQuantity,
+            bulkDiscounts: variant.bulkDiscounts,
+            facetValueCodes: [],
+            optionCodes: variant.optionCodes,
+          },
+        ],
       });
     }
   }
