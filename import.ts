@@ -3,20 +3,12 @@ import parse from "csv-parse/lib/sync";
 import XLSX from "xlsx";
 import { GraphQLClient } from "graphql-request";
 
-import {
-  rlQuestion,
-  rlPasword,
-  rlConfirm,
-  assertConfirm,
-  selection,
-} from "./rl-utils";
+import { rlQuestion, rlPasword, assertConfirm } from "./rl-utils";
 
 import {
   getExistingProducts,
   assertAuthentication,
-  getOptionGroups,
   createProduct,
-  assignOptionGroupToProduct,
   getExistingProductVariants,
   deleteProductVariants,
   createProductVariants,
@@ -31,9 +23,6 @@ import {
   getFacets,
   createOrUpdateOptionGroups,
   createOrUpdateFacets,
-  createOptionGroup,
-  createProductOptions,
-  getOptionGroup,
 } from "./graphql-utils";
 import {
   SLUGIFY_OPTIONS,
@@ -187,14 +176,6 @@ async function main() {
     f
   );
 
-  const facetCodeToId: { [key: string]: ID } = facets.reduce(
-    (obj: { [key: string]: ID }, facet) => {
-      obj[facet.code] = facet.id;
-      return obj;
-    },
-    {}
-  );
-
   const facetValueCodeToId: { [key: string]: ID } = facets.reduce(
     (obj: { [key: string]: ID }, facet) => {
       return facet.values.reduce((obj: { [key: string]: ID }, value) => {
@@ -285,6 +266,7 @@ async function main() {
     const product = <DeepRequired<ProductPrototype>>p;
 
     try {
+      //create / update option groups; side effect: also deletes variants if a new one has to be created.
       const optionGroups: DeepRequired<
         OptionGroup
       >[] = await createOrUpdateOptionGroups(
@@ -311,9 +293,39 @@ async function main() {
 
       for (const variant of product.children) {
         let variantId = variantSkuToId[variant.sku];
-        let exists = variantId ? true : false;
+        let similarVariant = variants.find(
+          (v) =>
+            v.options.length === optionGroups.length &&
+            v.options.reduce(
+              (bool: boolean, option) =>
+                bool &&
+                variant.optionCodes.find(
+                  ([groupCode, optionCode]) =>
+                    groupCode ===
+                      optionGroups.find((g) => g.id === option.groupId)?.code &&
+                    optionCode === option.code
+                ) !== undefined,
+              true
+            )
+        );
+        let skuExists = variantId ? true : false;
 
-        if (exists && hasAllOptionGroups(variant, variants)) {
+        if (
+          similarVariant &&
+          (variant.sku !== similarVariant.sku ||
+            variantId !== similarVariant.id)
+        ) {
+          console.log("Zu importierende Variante");
+          console.log(variant);
+          console.log("--------------------------------------------------");
+          console.log("Existierende Variante");
+          console.log(similarVariant);
+          throw new Error(
+            `${variant.sku} besitzt dieselben Attribute wie ${similarVariant.sku} (${similarVariant.id}) aber eine andere Artikelnummer!`
+          );
+        }
+
+        if (similarVariant) {
           variantUpdates.push({
             id: variantId,
             translations: product.translations.map((t) => ({
@@ -325,8 +337,6 @@ async function main() {
             ),
             sku: variant.sku,
             price: variant.price,
-            taxCategoryId: 1,
-            trackInventory: false,
             customFields: {
               bulkDiscountEnabled: variant.bulkDiscounts.length > 0,
               minimumOrderQuantity: variant.minimumOrderQuantity,
@@ -334,7 +344,7 @@ async function main() {
           });
         } else {
           //option groups don't match, delete it and create new one
-          if (exists) {
+          if (skuExists) {
             variantsToDelete.push(variantId);
           }
 
@@ -461,7 +471,7 @@ async function main() {
       loadingBar.increment();
     } catch (e) {
       console.error("Ein Fehler bei folgendem Produkt ist aufgetreten:");
-      console.error(util.inspect(product, { showHidden: false, depth: null }));
+      // console.error(util.inspect(product, { showHidden: false, depth: null }));
       console.error("SKU:", product.sku);
       throw e;
     }

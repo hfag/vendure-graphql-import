@@ -402,14 +402,14 @@ export const findOrCreateAssets = async (
   const invalid = unmatched.filter((s) => !isValidUrl(s));
 
   if (invalid.length > 0) {
-    throw new Error(
-      `${invalid.join(
+    console.error(
+      `[${invalid.join(
         ", "
-      )} wurden nicht hochgeladen und sind auch keine gültigen URLs!`
+      )}] wurden nicht hochgeladen und sind auch keine gültigen URLs!`
     );
   }
 
-  const downloads = await downloadFiles(unmatched);
+  const downloads = await downloadFiles(unmatched.filter(isValidUrl));
 
   // console.log(
   //   `${downloads.length} von ${unmatched.length} Bilder heruntergeladen. Lade sie nun hoch...`
@@ -758,9 +758,17 @@ export const createProduct = async (
       input: {
         featuredAssetId: assetIds[0],
         assetIds: assetIds,
-        facetValueIds: product.facetValueCodes.map(
-          (code) => facetValueCodeToId[code]
-        ),
+        facetValueIds: product.facetValueCodes.map((code) => {
+          if (!(code in facetValueCodeToId)) {
+            throw new Error(
+              `Es wurde keine ID für ${code} in [${Object.keys(
+                facetValueCodeToId
+              ).join(", ")}] grefunden!`
+            );
+          }
+
+          return facetValueCodeToId[code];
+        }),
         translations: product.translations,
         customFields: {
           productRecommendationsEnabled: false,
@@ -790,11 +798,19 @@ export const updateProduct = async (
         enabled: true,
         //assets stay the same
         /*featuredAssetId: null,
-        assetIds: [],*/
-        facetValueIds: product.facetValueCodes.map(
-          (code) => facetValueCodeToId[code]
-        ),
-        translations: product.translations,
+        assetIds: [],
+        facetValueIds: product.facetValueCodes.map((code) => {
+          if (!(code in facetValueCodeToId)) {
+            throw new Error(
+              `Es wurde keine ID für ${code} in [${Object.keys(
+                facetValueCodeToId
+              ).join(", ")}] grefunden!`
+            );
+          }
+
+          return facetValueCodeToId[code];
+        }),*/
+        // translations: product.translations,
         customFields: {
           productRecommendationsEnabled: false,
           groupKey: product.sku,
@@ -900,9 +916,11 @@ export const createOrUpdateOptionGroups = async (
 
   const response: DeepRequired<OptionGroup>[] = [];
 
+  let deletedVariants = false;
+
   for (const g of optionGroups) {
     let group: DeepRequired<OptionGroup>;
-    const existingGroup = existingOptionGroups.find((g) => g.code === g.code);
+    const existingGroup = existingOptionGroups.find((gr) => gr.code === g.code);
 
     if (existingGroup) {
       group = await updateOptionGroup(graphQLClient, {
@@ -910,6 +928,17 @@ export const createOrUpdateOptionGroups = async (
         id: existingGroup.id,
       });
     } else {
+      if (!deletedVariants) {
+        //since we have to create a new option group, all existing variants have to be deleted
+        const variantIds = (
+          await getExistingProductVariants(graphQLClient, productId)
+        ).variants.map((v) => v.id);
+
+        if (variantIds.length > 0) {
+          await deleteProductVariants(graphQLClient, variantIds);
+        }
+        deletedVariants = true;
+      }
       group = await createOptionGroup(graphQLClient, g);
       await assignOptionGroupToProduct(graphQLClient, productId, group.id);
     }

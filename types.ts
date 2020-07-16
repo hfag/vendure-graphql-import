@@ -93,12 +93,12 @@ export type ProductVariantUpdate = {
   facetValueIds: ID[];
   sku: string;
   price: number;
-  taxCategoryId: number;
+  taxCategoryId?: number;
   //assets stay the same
   /*featuredAssetId: null,
           assetIds: [],*/
   // stockOnHand: null,
-  trackInventory: boolean;
+  trackInventory?: boolean;
   customFields: {
     bulkDiscountEnabled: boolean;
     minimumOrderQuantity: number;

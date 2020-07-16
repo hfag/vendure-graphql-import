@@ -150,18 +150,18 @@ export const IMPORT_OPTION_GROUPS: ImportFacet[] = [
 ];
 
 export const IMPORT_ATTRIBUTE_COLUMNS = {
-  id: ["ID", "sku"],
+  id: ["ID", "sku", "Artikel_Nr"],
   parentId: ["Parent Product ID", "Produktgruppe_Shop"],
   sku: ["Sku", "Artikel_Nummer_Produkt"],
   language: ["WPML Language Code"],
   translationId: ["WPML Translation ID"],
-  name: ["Title"],
+  name: ["Title", "Artikelname_neu"],
   slug: ["Slug"],
   description: ["Content"],
   length: ["Length"],
-  width: ["Width"],
-  height: ["Height"],
-  assets: ["Image URL"],
+  width: ["Width", "Breite"],
+  height: ["Height", "Höhe"],
+  assets: ["Image URL", "Artikel_Bilder_Code"],
   upSells: ["Up-Sells"],
   crossSells: ["Cross-Sells"],
   price: ["Einzelpreis", "Price"],

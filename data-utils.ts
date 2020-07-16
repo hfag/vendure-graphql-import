@@ -9,7 +9,6 @@ import {
   ID,
   LanguageCode,
   OptionGroup,
-  Option,
   FacetValue,
 } from "./types";
 import {
@@ -434,6 +433,12 @@ export const tableToProducts = async (records: Record[], facets: Facet[]) => {
         });
         product.previousIds.push(id);
       } else {
+        if (products.find((p) => p.sku === sku)) {
+          throw new Error(
+            `Es existieren mehrere Produkte in der Tabelle mit der Artikelnummer ${sku}`
+          );
+        }
+
         products.push({
           previousIds: [id],
           translationId,
@@ -626,6 +631,12 @@ export const tableToProducts = async (records: Record[], facets: Facet[]) => {
         group.options[0].translations.push(...g.options[0].translations);
       });
     } else {
+      if (variants.find((v) => v.sku === sku)) {
+        throw new Error(
+          `Es existieren mehrere Varianten in der Tabelle mit der Artikelnummer ${sku}`
+        );
+      }
+
       variants.push({
         previousIds: [id],
         parentId,
