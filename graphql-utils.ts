@@ -708,9 +708,7 @@ export const findOrCreateFacetValues = async (
   const facetsToCreate: FacetValue[] = [];
 
   values.forEach((value) => {
-    const c = existing.find(
-      (cat) => cat.code.toLocaleLowerCase() === value.code
-    );
+    const c = existing.find((cat) => cat.code.toLowerCase() === value.code);
 
     if (c) {
       facetIds.push(c.id);
@@ -1200,6 +1198,7 @@ export const getExistingProductVariants = async (
     id: string;
     sku: string;
     options: { id: string; code: string; name: string; groupId: string }[];
+    assetIds: ID[];
   }[];
   variantSkuToId: { [sku: string]: string };
 }> => {
@@ -1209,6 +1208,7 @@ export const getExistingProductVariants = async (
         id: string;
         sku: string;
         options: { id: string; code: string; name: string; groupId: string }[];
+        assets: { id: ID }[];
       }[];
     };
   } = await graphQLClient.request(
@@ -1223,6 +1223,9 @@ export const getExistingProductVariants = async (
             name
             groupId
           }
+          assets{
+            id
+          }
         }
       }
     }`,
@@ -1235,7 +1238,13 @@ export const getExistingProductVariants = async (
     variantSkuToId[v.sku] = v.id;
   });
 
-  return { variants: existingVariants.product.variants, variantSkuToId };
+  return {
+    variants: existingVariants.product.variants.map((v) => ({
+      ...v,
+      assetIds: v.assets.map((a) => a.id),
+    })),
+    variantSkuToId,
+  };
 };
 
 export const deleteProductVariants = async (

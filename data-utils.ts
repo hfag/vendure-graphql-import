@@ -409,7 +409,7 @@ export const tableToProducts = async (records: Record[], facets: Facet[]) => {
 
           if (pricePerUnit > 0 && quantity > 0) {
             bulkDiscounts.push({
-              price: pricePerUnit,
+              price: pricePerUnit * 100,
               quantity: quantity,
             });
           }
@@ -818,24 +818,4 @@ export const tableToProducts = async (records: Record[], facets: Facet[]) => {
   }
 
   return { products, facets };
-};
-
-export const hasAllOptionGroups = (
-  variant: ProductVariantPrototype,
-  variants: { sku: string; options: { code: string }[] }[]
-) => {
-  const v = variants.find((v) => v.sku === variant.sku);
-  if (!v) {
-    throw new Error(
-      "variants has to be in variants for hasAllOptionGroups to be called"
-    );
-  }
-  const missingOptions = v.options.filter(
-    (o) =>
-      !variant.optionCodes.find(
-        ([groupCode, optionCode]) => o.code === optionCode
-      )
-  );
-
-  return missingOptions.length === 0;
 };

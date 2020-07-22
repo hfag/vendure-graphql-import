@@ -40,7 +40,7 @@ export const rlConfirm = (question: string, defaultAnswer = "n") =>
     rl.question(
       question + ` (${defaultTrue ? "Y" : "y"}/${!defaultTrue ? "N" : "n"}) `,
       (answer) => {
-        if (answer.toLocaleLowerCase() === nonDefault) {
+        if (answer.toLowerCase() === nonDefault) {
           resolve(!defaultTrue);
         } else {
           resolve(defaultTrue);

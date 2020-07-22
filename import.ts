@@ -24,11 +24,7 @@ import {
   createOrUpdateOptionGroups,
   createOrUpdateFacets,
 } from "./graphql-utils";
-import {
-  SLUGIFY_OPTIONS,
-  hasAllOptionGroups,
-  tableToProducts,
-} from "./data-utils";
+import { SLUGIFY_OPTIONS, tableToProducts } from "./data-utils";
 import {
   OptionGroup,
   ProductVariantCreation,
@@ -163,7 +159,9 @@ async function main() {
     process.exit(-1);
   }
 
-  await assertConfirm("Parsen beendet. Beginne Import?");
+  await assertConfirm(
+    `Parsen beendet. Beginne Import von ${products.length} Produkten?`
+  );
 
   const skuToProductId = await getExistingProducts(
     graphQLClient,
@@ -198,10 +196,10 @@ async function main() {
                 (coll) =>
                   coll.translations
                     .find((t) => t.languageCode === "de")
-                    ?.name.toLocaleLowerCase() ===
+                    ?.name.toLowerCase() ===
                   cat.translations
                     .find((t) => t.languageCode === "de")
-                    ?.name.toLocaleLowerCase()
+                    ?.name.toLowerCase()
               )
           )
           .map((cat) =>
@@ -280,9 +278,9 @@ async function main() {
         product.id
       );
 
-      const variantsToDelete = variants
+      const variantsToDelete = []; /*variants
         .filter((v) => !product.children.find((p) => p.sku === v.sku))
-        .map((v) => v.id);
+        .map((v) => v.id)*/
 
       const variantUpdates: ProductVariantUpdate[] = [];
       const variantCreations: ProductVariantCreation[] = [];
@@ -348,7 +346,7 @@ async function main() {
             variantsToDelete.push(variantId);
           }
 
-          const assetIds = await findOrCreateAssets(
+          const assetIds: ID[] = await findOrCreateAssets(
             graphQLClient,
             endpoint,
             token,
@@ -372,6 +370,27 @@ async function main() {
                 .map((o) => o.code)
                 .join(", ")}`
             );
+          }
+
+          //almost the same as before, the difference is that missing option groups are allowed
+          let similarVariant = variants.find(
+            (v) =>
+              v.options.length <= optionGroups.length &&
+              v.options.reduce(
+                (bool: boolean, option) =>
+                  bool &&
+                  variant.optionCodes.find(
+                    ([groupCode, optionCode]) =>
+                      groupCode ===
+                        optionGroups.find((g) => g.id === option.groupId)
+                          ?.code && optionCode === option.code
+                  ) !== undefined,
+                true
+              )
+          );
+
+          if (similarVariant && assetIds.length === 0) {
+            assetIds.push(...similarVariant.assetIds);
           }
 
           variantCreations.push({
