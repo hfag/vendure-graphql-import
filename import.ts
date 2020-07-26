@@ -227,43 +227,42 @@ async function main() {
   loadingBar.start(products.length, 0);
 
   for (const p of products) {
-    //we need to find a fitting product type
-    let productId = skuToProductId[p.sku];
-
-    if (typeof productId === "string") {
-      p.id = productId;
-      const pr = <DeepRequired<ProductPrototype>>p;
-
-      // await assertConfirm(
-      //   `Produkt "${
-      //     p.translations.find((t) => t.languageCode == "de")?.name
-      //   }" (${p.sku}) existiert bereits und wird aktualisiert.`,
-      //   "y"
-      // );
-
-      await updateProduct(graphQLClient, pr, facetValueCodeToId);
-    } else {
-      // await assertConfirm(
-      //   `Produkt "${
-      //     p.translations.find((t) => t.languageCode === "de")?.name
-      //   }" (${p.sku}) existiert noch nicht und wird neu erstellt.`
-      // );
-
-      skuToProductId[p.sku] = await createProduct(
-        graphQLClient,
-        endpoint,
-        token,
-        p,
-        facetValueCodeToId
-      );
-
-      productId = skuToProductId[p.sku];
-      p.id = productId;
-    }
-
-    const product = <DeepRequired<ProductPrototype>>p;
-
     try {
+      //we need to find a fitting product type
+      let productId = skuToProductId[p.sku];
+
+      if (typeof productId === "string") {
+        p.id = productId;
+        const pr = <DeepRequired<ProductPrototype>>p;
+
+        // await assertConfirm(
+        //   `Produkt "${
+        //     p.translations.find((t) => t.languageCode == "de")?.name
+        //   }" (${p.sku}) existiert bereits und wird aktualisiert.`,
+        //   "y"
+        // );
+
+        await updateProduct(graphQLClient, pr, facetValueCodeToId);
+      } else {
+        // await assertConfirm(
+        //   `Produkt "${
+        //     p.translations.find((t) => t.languageCode === "de")?.name
+        //   }" (${p.sku}) existiert noch nicht und wird neu erstellt.`
+        // );
+
+        skuToProductId[p.sku] = await createProduct(
+          graphQLClient,
+          endpoint,
+          token,
+          p,
+          facetValueCodeToId
+        );
+
+        productId = skuToProductId[p.sku];
+        p.id = productId;
+      }
+
+      const product = <DeepRequired<ProductPrototype>>p;
       //create / update option groups; side effect: also deletes variants if a new one has to be created.
       const optionGroups: DeepRequired<
         OptionGroup
@@ -489,9 +488,10 @@ async function main() {
 
       loadingBar.increment();
     } catch (e) {
+      loadingBar.stop();
       console.error("Ein Fehler bei folgendem Produkt ist aufgetreten:");
       // console.error(util.inspect(product, { showHidden: false, depth: null }));
-      console.error("SKU:", product.sku);
+      console.error("SKU:", p.sku);
       throw e;
     }
   }
