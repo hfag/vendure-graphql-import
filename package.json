@@ -13,7 +13,7 @@
     "form-data": "^3.0.0",
     "graphql-request": "^1.8.2",
     "lodash": "^4.17.15",
-    "node-fetch": "^2.6.0",
+    "node-fetch": "^2.6.1",
     "rimraf": "^3.0.2",
     "slugify": "^1.4.0",
     "ts-essentials": "^6.0.5",
