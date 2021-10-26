@@ -1,35 +1,33 @@
+import { LanguageCode, ProductOptionGroup, Scalars } from "./schema";
+
 export type Record = {
   [key: string]: string | number;
 };
 
-export type ID = number | string;
-export type AttributeFacet = { name: string; values: string[] };
-export type LanguageCode = "de" | "fr";
+export type ID = Scalars["ID"];
 
-export interface FacetValue {
-  id?: ID;
-  code: string;
-  translations: { languageCode: LanguageCode; name: string }[];
-}
+export type Unpacked<T> = T extends (infer U)[] ? U : T;
 
-export interface Facet {
+export interface TranslationPrototype {
   id?: ID;
-  code: string;
-  translations: { languageCode: LanguageCode; name: string }[];
-  values: FacetValue[];
-}
-
-export type Collection = {
-  id?: ID;
+  languageCode: LanguageCode;
   name: string;
-  translations: {
-    languageCode: LanguageCode;
-    name: string;
-    description: string;
-  }[];
-};
+}
 
-export interface Option {
+export interface FacetValuePrototype {
+  id?: ID;
+  code: string;
+  translations: TranslationPrototype[];
+}
+
+export interface FacetPrototype {
+  id?: ID;
+  code: string;
+  translations: TranslationPrototype[];
+  values: FacetValuePrototype[];
+}
+
+export interface OptionPrototype {
   id?: ID;
   code: string;
   translations: {
@@ -38,14 +36,14 @@ export interface Option {
   }[];
 }
 
-export interface OptionGroup {
+export interface OptionGroupPrototype {
   id?: ID;
   code: string;
   translations: {
     languageCode: LanguageCode;
     name: string;
   }[];
-  options: Option[];
+  options: OptionPrototype[];
 }
 
 export interface ProductPrototype {
@@ -66,14 +64,9 @@ export interface ProductPrototype {
   assets: string[];
   upsellsGroupSKUs: ID[];
   crosssellsGroupSKUs: ID[];
-  optionGroups: OptionGroup[];
+  optionGroups: OptionGroupPrototype[];
   facetValueCodes: string[];
   children: ProductVariantPrototype[];
-}
-
-export interface BulkDiscount {
-  quantity: number;
-  price: number;
 }
 
 export interface ProductVariantPrototype {
@@ -87,36 +80,7 @@ export interface ProductVariantPrototype {
   optionCodes: [string, string][];
 }
 
-export type ProductVariantUpdate = {
-  id: ID;
-  translations: { languageCode: string; name: string }[];
-  facetValueIds: ID[];
-  sku: string;
+export interface BulkDiscount {
+  quantity: number;
   price: number;
-  taxCategoryId?: number;
-  //assets stay the same
-  /*featuredAssetId: null,
-          assetIds: [],*/
-  // stockOnHand: null,
-  trackInventory?: boolean;
-  customFields: {
-    bulkDiscountEnabled: boolean;
-    minimumOrderQuantity: number;
-  };
-};
-export type ProductVariantCreation = {
-  productId: ID;
-  translations: { languageCode: string; name: string }[];
-  facetValueIds: ID[];
-  sku: string;
-  price: number;
-  taxCategoryId: ID;
-  optionIds: ID[];
-  featuredAssetId: ID;
-  assetIds: ID[];
-  trackInventory: boolean;
-  customFields: {
-    bulkDiscountEnabled: boolean;
-    minimumOrderQuantity: number;
-  };
-};
+}

@@ -13,7 +13,7 @@ import {
   deleteProductVariants,
   createProductVariants,
   updateProductVariants,
-  updateProductVariantBulkDiscounts,
+  updateBulkDiscounts,
   getCollections,
   updateProduct,
   createCategoryCollection,
@@ -25,25 +25,23 @@ import {
   createOrUpdateFacets,
 } from "./graphql-utils";
 import { SLUGIFY_OPTIONS, tableToProducts } from "./data-utils";
-import {
-  OptionGroup,
-  ProductVariantCreation,
-  ProductVariantUpdate,
-  ProductPrototype,
-  Facet,
-  ID,
-  Record,
-} from "./types";
-import { DeepRequired } from "ts-essentials";
+import { ProductPrototype, ID, Record, FacetPrototype } from "./types";
 import { CATEGORY_FACET_CODE } from "./data-utils/facets";
 import slugify from "slugify";
 import cliProgress from "cli-progress";
 import util from "util";
 import { notEmpty } from "./utils";
+import {
+  CreateProductVariantInput,
+  Facet,
+  GlobalFlag,
+  ProductOptionGroup,
+  UpdateProductVariantInput,
+} from "./schema";
 
 if (process.argv.length < 4) {
   console.error(
-    'Syntax: "node import.js path/to/file.ext https://vendure-domain.tld/admin-api" oder "node import.js path/to/file.ext path/to/out.json"'
+    'Syntax: "node import.js path/to/file.ext https://vendure-domain.tld/admin-api" oder "node import.js path/to/file.ext http://localhost:3000/admin-api path/to/out.json"'
   );
   process.exit(0);
 }
@@ -70,7 +68,8 @@ if (process.argv[2].endsWith(".csv")) {
 }
 
 async function main() {
-  const endpoint = process.argv[3];
+  //use language code=cn, otherwise not all translations are loaded :(
+  const endpoint = `${process.argv[3]}?languageCode=cn`;
 
   const username = await rlQuestion("Benutzername: ");
   const password = await rlPasword("Passwort: ");
@@ -85,7 +84,7 @@ async function main() {
     },
   });
 
-  let f: Facet[] = await getFacets(graphQLClient);
+  let f: FacetPrototype[] = await getFacets(graphQLClient);
 
   let products: ProductPrototype[] = [];
 
@@ -93,7 +92,7 @@ async function main() {
     products: (ProductPrototype & {
       translationId?: string | number | undefined;
     })[];
-    facets: Facet[];
+    facets: FacetPrototype[];
   } = json ? json : await tableToProducts(records, f);
   products = r.products;
   f = r.facets;
@@ -169,10 +168,7 @@ async function main() {
   );
 
   console.log(`Erstelle Kategorien (Facetten und Kollektionen)`);
-  const facets: DeepRequired<Facet>[] = await createOrUpdateFacets(
-    graphQLClient,
-    f
-  );
+  const facets: Facet[] = await createOrUpdateFacets(graphQLClient, f);
 
   const facetValueCodeToId: { [key: string]: ID } = facets.reduce(
     (obj: { [key: string]: ID }, facet) => {
@@ -217,14 +213,21 @@ async function main() {
           )
       );
 
-  console.log(`Importiere insgesamt ${products.length} Produkte.`);
+  const oldProductCount = products.filter(
+    (p) => typeof skuToProductId[p.sku] === "string"
+  ).length;
+  const newProductCount = products.length - oldProductCount;
+  
+  console.log(
+    `Importiere insgesamt ${products.length} Produkte, ${newProductCount} davon sind neu.`
+  );
 
   const loadingBar = new cliProgress.SingleBar(
     {},
     cliProgress.Presets.shades_classic
   );
 
-  loadingBar.start(products.length, 0);
+  //loadingBar.start(products.length, 0);
 
   for (const p of products) {
     try {
@@ -233,7 +236,7 @@ async function main() {
 
       if (typeof productId === "string") {
         p.id = productId;
-        const pr = <DeepRequired<ProductPrototype>>p;
+        const pr = <ProductPrototype & { id: ID }>p;
 
         // await assertConfirm(
         //   `Produkt "${
@@ -262,15 +265,14 @@ async function main() {
         p.id = productId;
       }
 
-      const product = <DeepRequired<ProductPrototype>>p;
+      const product = <ProductPrototype & { id: ID }>p;
       //create / update option groups; side effect: also deletes variants if a new one has to be created.
-      const optionGroups: DeepRequired<
-        OptionGroup
-      >[] = await createOrUpdateOptionGroups(
-        graphQLClient,
-        product.optionGroups,
-        product.id
-      );
+      const optionGroups: ProductOptionGroup[] =
+        await createOrUpdateOptionGroups(
+          graphQLClient,
+          product.optionGroups,
+          product.id
+        );
 
       const { variants, variantSkuToId } = await getExistingProductVariants(
         graphQLClient,
@@ -281,8 +283,8 @@ async function main() {
         .filter((v) => !product.children.find((p) => p.sku === v.sku))
         .map((v) => v.id)*/
 
-      const variantUpdates: ProductVariantUpdate[] = [];
-      const variantCreations: ProductVariantCreation[] = [];
+      const variantUpdates: UpdateProductVariantInput[] = [];
+      const variantCreations: CreateProductVariantInput[] = [];
       const variantBulkDiscounts: {
         sku: string;
         discounts: { quantity: number; price: number }[];
@@ -290,6 +292,7 @@ async function main() {
 
       for (const variant of product.children) {
         let variantId = variantSkuToId[variant.sku];
+        // console.log(`Importiere Variante ${variant.sku}...`);
         let similarVariant = variants.find(
           (v) =>
             v.options.length === optionGroups.length &&
@@ -323,6 +326,7 @@ async function main() {
         }
 
         if (similarVariant) {
+          // console.log("Variante existiert bereits, aktualisiere diese!");
           variantUpdates.push({
             id: variantId,
             translations: product.translations.map((t) => ({
@@ -343,6 +347,11 @@ async function main() {
           //option groups don't match, delete it and create new one
           if (skuExists) {
             variantsToDelete.push(variantId);
+            // console.log(
+            //   "Alte Variante mit derselben Artikelnummer wird gelöscht und eine neue Variante wird erstellt!"
+            // );
+          } else {
+            // console.log("Variante existiert noch nicht, erstelle eine neue!");
           }
 
           const assetIds: ID[] = await findOrCreateAssets(
@@ -403,7 +412,7 @@ async function main() {
             ),
             sku: variant.sku,
             price: variant.price,
-            taxCategoryId: 1,
+            taxCategoryId: "1",
             optionIds: variant.optionCodes.map(([groupCode, optionCode]) => {
               const g = optionGroups.find((g) => g.code === groupCode);
               if (!g) {
@@ -426,7 +435,7 @@ async function main() {
             featuredAssetId: assetIds[0],
             assetIds,
             // stockOnHand: null,
-            trackInventory: false,
+            trackInventory: GlobalFlag.False,
             customFields: {
               bulkDiscountEnabled: variant.bulkDiscounts.length > 0,
               minimumOrderQuantity: variant.minimumOrderQuantity,
@@ -471,11 +480,11 @@ async function main() {
 
       await updateProductVariants(graphQLClient, variantUpdates);
 
-      // console.log(
-      //   `Aktualisiere die Mengenrabatte für alle erstellten und aktualisierten Produktvarianten`
-      // );
+      console.log(
+        `Aktualisiere die Mengenrabatte für alle erstellten und aktualisierten Produktvarianten`
+      );
 
-      await updateProductVariantBulkDiscounts(
+      await updateBulkDiscounts(
         graphQLClient,
         variantBulkDiscounts.map(({ sku, discounts }) => ({
           productVariantId: variantSkuToId[sku],
@@ -483,8 +492,12 @@ async function main() {
         }))
       );
 
+      console.log("Fertig, kurze Pause bevor es weiter geht.");
+
       //prevent server overload
       await new Promise((resolve, reject) => setTimeout(resolve, 500));
+
+      // console.log("Weiter!");
 
       loadingBar.increment();
     } catch (e) {

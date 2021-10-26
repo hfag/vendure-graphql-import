@@ -106,3 +106,4 @@ dist
 
 out*.json
 excel*.json
+data/

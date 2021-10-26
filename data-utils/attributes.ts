@@ -1,4 +1,4 @@
-import { LanguageCode } from "types";
+import { LanguageCode } from "../schema";
 
 interface ImportFacet {
   translations: {
@@ -12,88 +12,88 @@ interface ImportFacet {
 export const IMPORT_OPTION_GROUPS: ImportFacet[] = [
   {
     translations: [
-      { languageCode: "de", name: "Ausführung" },
-      { languageCode: "fr", name: "Modèle" },
+      { languageCode: LanguageCode.De, name: "Ausführung" },
+      { languageCode: LanguageCode.Fr, name: "Modèle" },
     ],
     code: "model",
     columnKeys: ["Ausführung", "Ausfuehrung", "Modèle", "Modele"],
   },
   {
     translations: [
-      { languageCode: "de", name: "Pfeilrichtung" },
-      { languageCode: "fr", name: "Sens de la flèche" },
+      { languageCode: LanguageCode.De, name: "Pfeilrichtung" },
+      { languageCode: LanguageCode.Fr, name: "Sens de la flèche" },
     ],
     code: "arrow-direction",
     columnKeys: ["Pfeilrichtung", "Sens de la flèche", "Sens de la fleche"],
   },
   {
     translations: [
-      { languageCode: "de", name: "Grösse" },
-      { languageCode: "fr", name: "Taille" },
+      { languageCode: LanguageCode.De, name: "Grösse" },
+      { languageCode: LanguageCode.Fr, name: "Taille" },
     ],
     code: "size",
     columnKeys: ["Grösse", "Produkt Grösse", "Taille"],
   },
   {
     translations: [
-      { languageCode: "de", name: "Jahr" },
-      { languageCode: "fr", name: "An" },
+      { languageCode: LanguageCode.De, name: "Jahr" },
+      { languageCode: LanguageCode.Fr, name: "An" },
     ],
     code: "year",
     columnKeys: ["Jahr", "An"],
   },
   {
     translations: [
-      { languageCode: "de", name: "Farbe" },
-      { languageCode: "fr", name: "Couleur" },
+      { languageCode: LanguageCode.De, name: "Farbe" },
+      { languageCode: LanguageCode.Fr, name: "Couleur" },
     ],
     code: "color",
     columnKeys: ["Farbe", "Couleur"],
   },
   {
     translations: [
-      { languageCode: "de", name: "Format" },
-      { languageCode: "fr", name: "Format" },
+      { languageCode: LanguageCode.De, name: "Format" },
+      { languageCode: LanguageCode.Fr, name: "Format" },
     ],
     code: "format",
     columnKeys: ["Format"],
   },
   {
     translations: [
-      { languageCode: "de", name: "Leuchtdichte" },
-      { languageCode: "fr", name: "Luminance" },
+      { languageCode: LanguageCode.De, name: "Leuchtdichte" },
+      { languageCode: LanguageCode.Fr, name: "Luminance" },
     ],
     code: "luminance",
     columnKeys: ["Leuchtdichte_mcd", "Leuchtdichte", "Luminance"],
   },
   {
     translations: [
-      { languageCode: "de", name: "Material" },
-      { languageCode: "fr", name: "Matériau" },
+      { languageCode: LanguageCode.De, name: "Material" },
+      { languageCode: LanguageCode.Fr, name: "Matériau" },
     ],
     code: "material",
     columnKeys: ["Material", "Produkt Material", "Matériau", "Materiau"],
   },
   {
     translations: [
-      { languageCode: "de", name: "Norm" },
-      { languageCode: "fr", name: "Norme" },
+      { languageCode: LanguageCode.De, name: "Norm" },
+      { languageCode: LanguageCode.Fr, name: "Norme" },
     ],
     code: "norm",
     columnKeys: ["Norm", "Norme"],
   },
   {
     translations: [
-      { languageCode: "de", name: "PSPA Klasse" },
-      { languageCode: "fr", name: "PSPA Classe" },
+      { languageCode: LanguageCode.De, name: "PSPA Klasse" },
+      { languageCode: LanguageCode.Fr, name: "PSPA Classe" },
     ],
     code: "pspa-class",
     columnKeys: ["PSPA_Class", "Pspa-klasse"],
   },
   {
     translations: [
-      { languageCode: "de", name: "Ursprungsland" },
-      { languageCode: "fr", name: "Pays d'origine" },
+      { languageCode: LanguageCode.De, name: "Ursprungsland" },
+      { languageCode: LanguageCode.Fr, name: "Pays d'origine" },
     ],
     code: "country",
     columnKeys: [
@@ -105,8 +105,8 @@ export const IMPORT_OPTION_GROUPS: ImportFacet[] = [
   },
   {
     translations: [
-      { languageCode: "de", name: "Druckeigenschaft(-en)" },
-      { languageCode: "fr", name: "Propriétés d'impression" },
+      { languageCode: LanguageCode.De, name: "Druckeigenschaft(-en)" },
+      { languageCode: LanguageCode.Fr, name: "Propriétés d'impression" },
     ],
     code: "print-property",
     columnKeys: [
@@ -117,32 +117,32 @@ export const IMPORT_OPTION_GROUPS: ImportFacet[] = [
   },
   {
     translations: [
-      { languageCode: "de", name: "Einheit" },
-      { languageCode: "fr", name: "Unité" },
+      { languageCode: LanguageCode.De, name: "Einheit" },
+      { languageCode: LanguageCode.Fr, name: "Unité" },
     ],
     code: "unit",
     columnKeys: ["Einheit", "Produkt Einheit", "Unité"],
   },
   {
     translations: [
-      { languageCode: "de", name: "Symbolnummer" },
-      { languageCode: "fr", name: "Numéro de symbole" },
+      { languageCode: LanguageCode.De, name: "Symbolnummer" },
+      { languageCode: LanguageCode.Fr, name: "Numéro de symbole" },
     ],
     code: "symbol-number",
     columnKeys: ["Symbolnummer", "Numéro de symbole"],
   },
   {
     translations: [
-      { languageCode: "de", name: "Inhalt" },
-      { languageCode: "fr", name: "Contenu" },
+      { languageCode: LanguageCode.De, name: "Inhalt" },
+      { languageCode: LanguageCode.Fr, name: "Contenu" },
     ],
     code: "content",
     columnKeys: ["Inhalt", "Contenu"],
   },
   {
     translations: [
-      { languageCode: "de", name: "Variante" },
-      { languageCode: "fr", name: "Variante" },
+      { languageCode: LanguageCode.De, name: "Variante" },
+      { languageCode: LanguageCode.Fr, name: "Variante" },
     ],
     code: "variant",
     columnKeys: ["Variante", "Variante"],

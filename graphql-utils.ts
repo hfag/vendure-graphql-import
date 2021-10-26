@@ -3,40 +3,56 @@ import fetch from "node-fetch";
 import FormData from "form-data";
 import slugify from "slugify";
 import { GraphQLClient, rawRequest } from "graphql-request";
-import { DeepRequired } from "ts-essentials";
 import { SLUGIFY_OPTIONS } from "./data-utils";
-import {
-  ProductPrototype,
-  OptionGroup,
-  Facet,
-  ProductVariantCreation,
-  ProductVariantUpdate,
-  AttributeFacet,
-  LanguageCode,
-  ID,
-  Collection,
-  FacetValue,
-  Option,
-} from "./types";
 import {
   downloadFiles,
   cleanDownloads,
   getFilenameFromUrl,
   isValidUrl,
 } from "./utils";
+import {
+  Asset,
+  BulkDiscountUpdate,
+  Collection,
+  CollectionList,
+  CreateAssetResult,
+  CreateCollectionInput,
+  CreateFacetInput,
+  CreateFacetValueInput,
+  CreateProductOptionGroupInput,
+  CreateProductOptionInput,
+  CreateProductVariantInput,
+  Facet,
+  FacetList,
+  FacetValue,
+  LanguageCode,
+  Maybe,
+  Mutation,
+  Product,
+  ProductOption,
+  ProductOptionGroup,
+  ProductVariant,
+  Query,
+  UpdateFacetInput,
+  UpdateProductInput,
+  UpdateProductOptionGroupInput,
+  UpdateProductOptionInput,
+  UpdateProductVariantInput,
+} from "./schema";
+import {
+  FacetPrototype,
+  FacetValuePrototype,
+  ID,
+  OptionGroupPrototype,
+  OptionPrototype,
+  ProductPrototype,
+} from "./types";
 
 export const uploadFilesToGraphql = async (
   endpoint: string,
   authenticationToken: string,
   filepaths: string[]
-): Promise<{
-  data: {
-    createAssets: {
-      id: string;
-      name: string;
-    }[];
-  };
-}> => {
+): Promise<Asset[]> => {
   const body = new FormData();
 
   body.append(
@@ -45,8 +61,14 @@ export const uploadFilesToGraphql = async (
       query: /* GraphQL */ `
         mutation CreateAssets($input: [CreateAssetInput!]!) {
           createAssets(input: $input) {
-            id
-            name
+            ... on Asset {
+              id
+              name
+            }
+            ... on MimeTypeError {
+              errorCode
+              message
+            }
           }
         }
       `,
@@ -70,11 +92,27 @@ export const uploadFilesToGraphql = async (
     body.append(index.toString(), fs.createReadStream(filepath));
   });
 
-  return await fetch(endpoint, {
+  const results: {
+    data: { createAssets: Mutation["createAssets"] };
+  } = await fetch(endpoint, {
     method: "POST",
     body,
     headers: { Authorization: "Bearer " + authenticationToken },
   }).then((r) => r.json());
+
+  const assets: Asset[] = [];
+
+  results.data.createAssets.forEach((result) => {
+    if ("id" in result) {
+      assets.push(result);
+    } else {
+      throw new Error(
+        `Error Code: ${result.errorCode}. Message: ${result.message}`
+      );
+    }
+  });
+
+  return assets;
 };
 
 export const assertAuthentication = async (
@@ -84,13 +122,23 @@ export const assertAuthentication = async (
 ) => {
   const login = await rawRequest(
     endpoint,
-    `mutation Login($username: String!, $password: String!){
-      login(username: $username, password: $password){
-        user{
-          identifier
+    /* GraphQL */ `
+      mutation Login($username: String!, $password: String!) {
+        login(username: $username, password: $password) {
+          ... on CurrentUser {
+            identifier
+          }
+          ... on InvalidCredentialsError {
+            errorCode
+            message
+          }
+          ... on NativeAuthStrategyError {
+            errorCode
+            message
+          }
         }
       }
-    }`,
+    `,
     {
       username,
       password,
@@ -99,9 +147,18 @@ export const assertAuthentication = async (
 
   const token = login.headers.get("vendure-auth-token");
 
-  if ((login.errors && login.errors.length > 0) || token === null) {
+  if (
+    (login.errors && login.errors.length > 0) ||
+    //@ts-ignore
+    login?.data?.login?.errorCode ||
+    token === null
+  ) {
     console.log("Authentifikation fehlgeschlagen!");
     console.error(login.errors);
+    //@ts-ignore
+    console.error(login?.data?.login?.errorCode);
+    //@ts-ignore
+    console.error(login?.data?.login?.message);
     process.exit(0);
   }
 
@@ -110,24 +167,13 @@ export const assertAuthentication = async (
 
 export const getCollections = async (
   graphQLClient: GraphQLClient
-): Promise<DeepRequired<Collection>[]> => {
+): Promise<Collection[]> => {
   const response: {
-    collections: {
-      items: {
-        id: ID;
-        name: string;
-        translations: {
-          languageCode: LanguageCode;
-          name: string;
-          description: string;
-          slug: string;
-        }[];
-      }[];
-    };
-  } = await graphQLClient.request(
-    `query {
-      collections{
-        items{
+    collections: Query["collections"];
+  } = await graphQLClient.request(/* GraphQL */ `
+    query {
+      collections {
+        items {
           id
           name
           translations {
@@ -138,45 +184,28 @@ export const getCollections = async (
           }
         }
       }
-    }`
-  );
+    }
+  `);
 
   return response.collections.items;
 };
 
 export const getFacets = async (
   graphQLClient: GraphQLClient
-): Promise<DeepRequired<Facet>[]> => {
+): Promise<Facet[]> => {
   const response: {
-    facets: {
-      items: {
-        id: ID;
-        code: string;
-        translations: {
-          languageCode: LanguageCode;
-          name: string;
-        }[];
-        values: {
-          id: ID;
-          code: string;
-          translations: {
-            languageCode: LanguageCode;
-            name: string;
-          }[];
-        }[];
-      }[];
-    };
-  } = await graphQLClient.request(
-    `query {
-      facets{
-        items{
+    facets: Query["facets"];
+  } = await graphQLClient.request(/* GraphQL */ `
+    query {
+      facets {
+        items {
           id
           code
           translations {
             languageCode
             name
           }
-          values{
+          values {
             id
             code
             translations {
@@ -186,8 +215,8 @@ export const getFacets = async (
           }
         }
       }
-    }`
-  );
+    }
+  `);
 
   return response.facets.items;
 };
@@ -205,41 +234,40 @@ export const createCategoryCollection = async (
   facetValueIds: ID[],
   isPrivate = false
 ): Promise<ID> => {
-  const response: {
-    createCollection: {
-      id: string;
-      name: string;
-    };
-  } = await graphQLClient.request(
-    `mutation CreateCollection($input: CreateCollectionInput!){
-      createCollection(input: $input){
-        id
-        name
-      }
-    }`,
-    {
-      input: {
-        parentId: 1,
-        isPrivate,
-        translations: collection.translations,
-        filters: [
+  const input: CreateCollectionInput = {
+    parentId: "1",
+    isPrivate,
+    translations: collection.translations,
+    filters: [
+      {
+        code: "facet-value-filter",
+        arguments: [
           {
-            code: "facet-value-filter",
-            arguments: [
-              {
-                name: "facetValueIds",
-                type: "facetValueIds",
-                value: JSON.stringify(facetValueIds),
-              },
-              {
-                name: "containsAny",
-                type: "boolean",
-                value: "false",
-              },
-            ],
+            name: "facetValueIds",
+            value: JSON.stringify(facetValueIds),
+          },
+          {
+            name: "containsAny",
+            value: "false",
           },
         ],
       },
+    ],
+  };
+
+  const response: {
+    createCollection: Mutation["createCollection"];
+  } = await graphQLClient.request(
+    /* GraphQL */ `
+      mutation CreateCollection($input: CreateCollectionInput!) {
+        createCollection(input: $input) {
+          id
+          name
+        }
+      }
+    `,
+    {
+      input,
     }
   );
 
@@ -251,28 +279,31 @@ export const getExistingProducts = async (
   productGroupKeys: string[]
 ) => {
   const existing: {
-    getProductsByGroupKeys: {
-      id: string;
-      customFields: { groupKey: string };
-    }[];
+    getProductsByGroupKeys: Product[];
   } = await graphQLClient.request(
-    `query GetProductsByGroupKeys($productGroupKeys: [String!]!){
-      getProductsByGroupKeys(productGroupKeys: $productGroupKeys){
-        id
-        customFields {
-          groupKey
+    /* GraphQL */ `
+      query GetProductsByGroupKeys($productGroupKeys: [String!]!) {
+        getProductsByGroupKeys(productGroupKeys: $productGroupKeys) {
+          id
+          customFields {
+            groupKey
+          }
         }
       }
-    }`,
+    `,
     { productGroupKeys }
   );
 
   const skuToProductId: { [sku: string]: ID } = {};
-  existing.getProductsByGroupKeys.forEach(
-    (p: { id: string; customFields: { groupKey: string } }) => {
+  existing.getProductsByGroupKeys.forEach((p) => {
+    if (p.customFields && p.customFields.groupKey) {
       skuToProductId[p.customFields.groupKey] = p.id;
+    } else {
+      throw new Error(
+        `customFields.groupKey is undefined for product with the id ${p.id}`
+      );
     }
-  );
+  });
 
   return skuToProductId;
 };
@@ -282,21 +313,20 @@ export const getFacetValues = async (
   facetId: ID = "1"
 ) => {
   const response: {
-    facet: {
-      id: string;
-      values: { id: string; name: string; code: string }[];
-    };
+    facet: Facet;
   } = await graphQLClient.request(
-    `query Facet($id: ID!){
-      facet(id: $id){
-        id
-        values {
+    /* GraphQL */ `
+      query Facet($id: ID!) {
+        facet(id: $id) {
           id
-          name
-          code
+          values {
+            id
+            name
+            code
+          }
         }
       }
-    }`,
+    `,
     { id: facetId }
   );
 
@@ -306,35 +336,35 @@ export const getFacetValues = async (
 export const createFacetValues = async (
   graphQLClient: GraphQLClient,
   facetId: ID = "1",
-  values: FacetValue[]
-): Promise<DeepRequired<FacetValue>[]> => {
+  values: FacetValuePrototype[]
+): Promise<FacetValue[]> => {
   if (values.length === 0) {
     return [];
   }
 
+  const input: CreateFacetValueInput[] = values.map((v) => ({
+    facetId,
+    code: v.code,
+    translations: v.translations,
+  }));
+
   const response: {
-    createFacetValues: {
-      id: string;
-      code: string;
-      translations: { languageCode: LanguageCode; name: string }[];
-    }[];
+    createFacetValues: Mutation["createFacetValues"];
   } = await graphQLClient.request(
-    `mutation CreateFacetValues($input: [CreateFacetValueInput!]!){
-      createFacetValues(input: $input){
-        id
-        code
-        translations{
-          languageCode
-          name
+    /* GraphQL */ `
+      mutation CreateFacetValues($input: [CreateFacetValueInput!]!) {
+        createFacetValues(input: $input) {
+          id
+          code
+          translations {
+            languageCode
+            name
+          }
         }
       }
-    }`,
+    `,
     {
-      input: values.map((v) => ({
-        facetId,
-        code: v.code,
-        translations: v.translations,
-      })),
+      input,
     }
   );
 
@@ -343,35 +373,35 @@ export const createFacetValues = async (
 
 export const updateFacetValues = async (
   graphQLClient: GraphQLClient,
-  values: DeepRequired<FacetValue>[]
-): Promise<DeepRequired<FacetValue>[]> => {
+  values: (FacetValuePrototype & { id: ID })[]
+): Promise<FacetValue[]> => {
   if (values.length === 0) {
     return [];
   }
 
+  const input: UpdateFacetInput[] = values.map((v) => ({
+    id: v.id,
+    code: v.code,
+    translations: v.translations,
+  }));
+
   const response: {
-    updateFacetValues: {
-      id: string;
-      code: string;
-      translations: { languageCode: LanguageCode; name: string }[];
-    }[];
+    updateFacetValues: Mutation["updateFacetValues"];
   } = await graphQLClient.request(
-    `mutation UpdateFacetValues($input: [UpdateFacetValueInput!]!){
-      updateFacetValues(input: $input){
-        id
-        code
-        translations{
-          languageCode
-          name
+    /* GraphQL */ `
+      mutation UpdateFacetValues($input: [UpdateFacetValueInput!]!) {
+        updateFacetValues(input: $input) {
+          id
+          code
+          translations {
+            languageCode
+            name
+          }
         }
       }
-    }`,
+    `,
     {
-      input: values.map((v) => ({
-        id: v.id,
-        code: v.code,
-        translations: v.translations,
-      })),
+      input,
     }
   );
 
@@ -418,10 +448,7 @@ export const findOrCreateAssets = async (
 
   cleanDownloads();
 
-  return [
-    ...Object.values(assetIdsByName),
-    ...uploadResponse.data.createAssets.map((a) => a.id),
-  ];
+  return [...Object.values(assetIdsByName), ...uploadResponse.map((a) => a.id)];
 };
 
 export const getAssetsIdByName = async (
@@ -431,13 +458,15 @@ export const getAssetsIdByName = async (
   const mappings = await Promise.all(
     names.map(async (name) => {
       const value: {
-        assetByName: { id: number };
+        assetByName: Query["assetByName"];
       } = await graphQLClient.request(
-        `query AssetByName($name: String!){
-        assetByName(name: $name){
-          id
-        }
-      }`,
+        /* GraphQL */ `
+          query AssetByName($name: String!) {
+            assetByName(name: $name) {
+              id
+            }
+          }
+        `,
         { name }
       );
 
@@ -455,19 +484,19 @@ export const getAssetsIdByName = async (
 
 export const createOrUpdateFacets = async (
   graphQLClient: GraphQLClient,
-  facets: Facet[]
-): Promise<DeepRequired<Facet>[]> => {
+  facets: FacetPrototype[]
+): Promise<Facet[]> => {
   return Promise.all(
     facets.map(async (f) => {
-      let facet: DeepRequired<Facet>;
+      let facet: Facet;
       if (f.id) {
         facet = await updateFacet(graphQLClient, { ...f, id: f.id });
       } else {
         facet = await createFacet(graphQLClient, f);
       }
 
-      const u: DeepRequired<FacetValue>[] = [];
-      const c: FacetValue[] = [];
+      const u: (FacetValuePrototype & { id: ID })[] = [];
+      const c: FacetValuePrototype[] = [];
 
       f.values.forEach((v) => {
         if (v.id) {
@@ -482,86 +511,26 @@ export const createOrUpdateFacets = async (
         updateFacetValues(graphQLClient, u),
       ]);
 
-      return getFacet(graphQLClient, facet.id);
+      return assertGetFacet(graphQLClient, facet.id);
     })
   );
 };
 
-export const getFacet = async (
+export const assertGetFacet = async (
   graphQLClient: GraphQLClient,
   id: ID
-): Promise<DeepRequired<Facet>> => {
-  const response: {
-    facet: {
-      id: ID;
-      code: string;
-      translations: {
-        languageCode: LanguageCode;
-        name: string;
-      }[];
-      values: {
-        id: ID;
-        code: string;
-        translations: {
-          languageCode: LanguageCode;
-          name: string;
-        }[];
-      }[];
-    };
-  } = await graphQLClient.request(
-    `query Facet($id: ID!) {
-      facet(id: $id){
-        id
-        code
-        translations {
-          languageCode
-          name
-        }
-        values{
+): Promise<Facet> => {
+  const response: { facet: Query["facet"] } = await graphQLClient.request(
+    /* GraphQL */ `
+      query Facet($id: ID!) {
+        facet(id: $id) {
           id
           code
           translations {
             languageCode
             name
           }
-        }
-      }
-    }`,
-    { id }
-  );
-
-  return response.facet;
-};
-
-export const createFacet = async (
-  graphQLClient: GraphQLClient,
-  facet: {
-    code: string;
-    translations: { languageCode: LanguageCode; name: string }[];
-  },
-  isPrivate = false
-): Promise<DeepRequired<Facet>> => {
-  const response: {
-    createFacet: {
-      id: ID;
-      code: string;
-      translations: { languageCode: LanguageCode; name: string }[];
-      values: {
-        id: string;
-        code: string;
-        translations: { languageCode: LanguageCode; name: string }[];
-      }[];
-    };
-  } = await graphQLClient.request(
-    `mutation CreateFacet($input: CreateFacetInput!) {
-      createFacet(input: $input) {
-          id
-          code
-          translations {
-            languageCode
-            name
-          }
-          values{
+          values {
             id
             code
             translations {
@@ -570,13 +539,54 @@ export const createFacet = async (
             }
           }
         }
-      }`,
+      }
+    `,
+    { id }
+  );
+
+  if (!response.facet) {
+    throw new Error(`The facet with id ${id} does not exist!`);
+  }
+
+  return response.facet;
+};
+
+export const createFacet = async (
+  graphQLClient: GraphQLClient,
+  facet: FacetPrototype,
+  isPrivate = false
+): Promise<Facet> => {
+  const input: CreateFacetInput = {
+    code: facet.code,
+    isPrivate,
+    translations: facet.translations,
+  };
+
+  const response: {
+    createFacet: Mutation["createFacet"];
+  } = await graphQLClient.request(
+    /* GraphQL */ `
+      mutation CreateFacet($input: CreateFacetInput!) {
+        createFacet(input: $input) {
+          id
+          code
+          translations {
+            languageCode
+            name
+          }
+          values {
+            id
+            code
+            translations {
+              languageCode
+              name
+            }
+          }
+        }
+      }
+    `,
     {
-      input: {
-        code: facet.code,
-        isPrivate,
-        translations: facet.translations,
-      },
+      input,
     }
   );
 
@@ -585,34 +595,29 @@ export const createFacet = async (
 
 export const updateFacet = async (
   graphQLClient: GraphQLClient,
-  facet: {
-    id: ID;
-    code: string;
-    translations: { languageCode: LanguageCode; name: string }[];
-  },
+  facet: FacetPrototype & { id: ID },
   isPrivate = false
-): Promise<DeepRequired<Facet>> => {
+): Promise<Facet> => {
+  const input: UpdateFacetInput = {
+    id: facet.id,
+    code: facet.code,
+    isPrivate,
+    translations: facet.translations,
+  };
+
   const response: {
-    updateFacet: {
-      id: ID;
-      code: string;
-      translations: { languageCode: LanguageCode; name: string }[];
-      values: {
-        id: string;
-        code: string;
-        translations: { languageCode: LanguageCode; name: string }[];
-      }[];
-    };
+    updateFacet: Mutation["updateFacet"];
   } = await graphQLClient.request(
-    `mutation UpdateFacet($input: UpdateFacetInput!) {
-      updateFacet(input: $input) {
+    /* GraphQL */ `
+      mutation UpdateFacet($input: UpdateFacetInput!) {
+        updateFacet(input: $input) {
           id
           code
           translations {
             languageCode
             name
           }
-          values{
+          values {
             id
             code
             translations {
@@ -621,14 +626,10 @@ export const updateFacet = async (
             }
           }
         }
-      }`,
+      }
+    `,
     {
-      input: {
-        id: facet.id,
-        code: facet.code,
-        isPrivate,
-        translations: facet.translations,
-      },
+      input,
     }
   );
 
@@ -641,52 +642,52 @@ export const findOrCreateFacet = async (
   isPrivate = false
 ) => {
   const searchResponse: {
-    facets: {
-      items: { id: string; code: string }[];
-    };
-  } = await graphQLClient.request(
-    `query {
-        facets {
-          items{
-            id
-            code
-          }
+    facets: Query["facets"];
+  } = await graphQLClient.request(/* GraphQL */ `
+    query {
+      facets {
+        items {
+          id
+          code
         }
-      }`
-  );
+      }
+    }
+  `);
 
-  const f = searchResponse.facets.items.find((f) => f.code === facet.code);
+  const f = searchResponse.facets.items.find(
+    (f: Facet) => f.code === facet.code
+  );
 
   if (f) {
     return findOrCreateFacetValues(graphQLClient, f.id, facet.values);
   } else {
+    const input: CreateFacetInput = {
+      code: facet.code,
+      isPrivate,
+      translations: facet.translations,
+      values: facet.values.map((v) => ({
+        code: v.code,
+        translations: v.translations,
+      })),
+    };
+
     const response: {
-      createFacet: {
-        id: string;
-        code: string;
-        values: { id: string; code: string }[];
-      };
+      createFacet: Mutation["createFacet"];
     } = await graphQLClient.request(
-      `mutation CreateFacet($input: CreateFacetInput!) {
-        createFacet(input: $input) {
+      /* GraphQL */ `
+        mutation CreateFacet($input: CreateFacetInput!) {
+          createFacet(input: $input) {
             id
             code
-            values{
+            values {
               id
               code
             }
           }
-        }`,
+        }
+      `,
       {
-        input: {
-          code: facet.code,
-          isPrivate,
-          translations: facet.translations,
-          values: facet.values.map((v) => ({
-            code: v.code,
-            translations: v.translations,
-          })),
-        },
+        input,
       }
     );
 
@@ -747,11 +748,13 @@ export const createProduct = async (
   const response: {
     createProduct: { id: string };
   } = await graphQLClient.request(
-    `mutation CreateProduct($input: CreateProductInput!){
-      createProduct(input: $input){
-        id
+    /* GraphQL */ `
+      mutation CreateProduct($input: CreateProductInput!) {
+        createProduct(input: $input) {
+          id
+        }
       }
-    }`,
+    `,
     {
       input: {
         featuredAssetId: assetIds[0],
@@ -781,67 +784,66 @@ export const createProduct = async (
 
 export const updateProduct = async (
   graphQLClient: GraphQLClient,
-  product: Required<ProductPrototype>,
+  product: ProductPrototype & { id: ID },
   facetValueCodeToId: { [code: string]: ID }
-) => {
-  return await graphQLClient.request(
-    `mutation UpdateProduct($input: UpdateProductInput!){
-      updateProduct(input: $input){
-        id
+): Promise<Product> => {
+  const input: UpdateProductInput = {
+    id: product.id,
+    enabled: true,
+    //assets stay the same
+    /*featuredAssetId: null,
+    assetIds: [],
+    facetValueIds: product.facetValueCodes.map((code) => {
+      if (!(code in facetValueCodeToId)) {
+        throw new Error(
+          `Es wurde keine ID für ${code} in [${Object.keys(
+            facetValueCodeToId
+          ).join(", ")}] grefunden!`
+        );
       }
-    }`,
-    {
-      input: {
-        id: product.id,
-        enabled: true,
-        //assets stay the same
-        /*featuredAssetId: null,
-        assetIds: [],
-        facetValueIds: product.facetValueCodes.map((code) => {
-          if (!(code in facetValueCodeToId)) {
-            throw new Error(
-              `Es wurde keine ID für ${code} in [${Object.keys(
-                facetValueCodeToId
-              ).join(", ")}] grefunden!`
-            );
-          }
 
-          return facetValueCodeToId[code];
-        }),*/
-        // translations: product.translations,
-        customFields: {
-          productRecommendationsEnabled: false,
-          groupKey: product.sku,
-        },
-      },
+      return facetValueCodeToId[code];
+    }),*/
+    // translations: product.translations,
+    customFields: {
+      productRecommendationsEnabled: false,
+      groupKey: product.sku,
+    },
+  };
+
+  const response: {
+    updateProduct: Mutation["updateProduct"];
+  } = await graphQLClient.request(
+    /* GraphQL */ `
+      mutation UpdateProduct($input: UpdateProductInput!) {
+        updateProduct(input: $input) {
+          id
+        }
+      }
+    `,
+    {
+      input,
     }
   );
+
+  return response.updateProduct;
 };
 
 export const getOptionGroups = async (
   graphQLClient: GraphQLClient
-): Promise<DeepRequired<OptionGroup>[]> => {
+): Promise<ProductOptionGroup[]> => {
   const optionGroupsResponse: {
-    productOptionGroups: {
-      id: string;
-      code: string;
-      translations: { languageCode: LanguageCode; name: string }[];
-      options: {
-        id: string;
-        code: string;
-        translations: { languageCode: LanguageCode; name: string }[];
-      }[];
-    }[];
-  } = await graphQLClient.request(
-    `query {
-      productOptionGroups{
+    productOptionGroups: Query["productOptionGroups"];
+  } = await graphQLClient.request(/* GraphQL */ `
+    query {
+      productOptionGroups {
         id
         code
         translations {
           languageCode
           name
         }
-        options{
+        options {
           id
           code
           translations {
@@ -850,8 +852,8 @@ export const getOptionGroups = async (
           }
         }
       }
-    }`
-  );
+    }
+  `);
 
   return optionGroupsResponse.productOptionGroups;
 };
@@ -859,65 +861,62 @@ export const getOptionGroups = async (
 export const getOptionGroupsByProductId = async (
   graphQLClient: GraphQLClient,
   productId: ID
-): Promise<Required<OptionGroup>[]> => {
+): Promise<ProductOptionGroup[]> => {
   const optionGroupsResponse: {
-    product: {
-      optionGroups: {
-        id: string;
-        code: string;
-        translations: { languageCode: LanguageCode; name: string }[];
-        options: {
-          id: string;
-          code: string;
-          translations: { languageCode: LanguageCode; name: string }[];
-        }[];
-      }[];
-    };
+    product: Query["product"];
   } = await graphQLClient.request(
-    `query optionGroups($productId: ID!){
-      product(id: $productId){
-        optionGroups{
-          id
-          code
-          translations {
-            languageCode
-            name
-          }
-          options{
+    /* GraphQL */ `
+      query optionGroups($productId: ID!) {
+        product(id: $productId) {
+          optionGroups {
             id
             code
             translations {
               languageCode
               name
             }
+            options {
+              id
+              code
+              translations {
+                languageCode
+                name
+              }
+            }
           }
         }
       }
-    }`,
+    `,
     {
       productId,
     }
   );
+
+  if (!optionGroupsResponse.product) {
+    throw new Error(
+      `Produkt mit der Id ${productId} konnte nicht gefunden werden!`
+    );
+  }
 
   return optionGroupsResponse.product.optionGroups;
 };
 
 export const createOrUpdateOptionGroups = async (
   graphQLClient: GraphQLClient,
-  optionGroups: OptionGroup[],
+  optionGroups: OptionGroupPrototype[],
   productId: ID
-): Promise<DeepRequired<OptionGroup>[]> => {
+): Promise<ProductOptionGroup[]> => {
   const existingOptionGroups = await getOptionGroupsByProductId(
     graphQLClient,
     productId
   );
 
-  const response: DeepRequired<OptionGroup>[] = [];
+  const response: ProductOptionGroup[] = [];
 
   let deletedVariants = false;
 
   for (const g of optionGroups) {
-    let group: DeepRequired<OptionGroup>;
+    let group: ProductOptionGroup;
     const existingGroup = existingOptionGroups.find((gr) => gr.code === g.code);
 
     if (existingGroup) {
@@ -941,8 +940,8 @@ export const createOrUpdateOptionGroups = async (
       await assignOptionGroupToProduct(graphQLClient, productId, group.id);
     }
 
-    const u: DeepRequired<Option>[] = [];
-    const c: Option[] = [];
+    const u: (OptionPrototype & { id: ID })[] = [];
+    const c: OptionPrototype[] = [];
 
     g.options.forEach((option) => {
       const existingOption = group.options.find((o) => o.code === option.code);
@@ -968,39 +967,38 @@ export const createOrUpdateOptionGroups = async (
 export const getOptionGroup = async (
   graphQLClient: GraphQLClient,
   id: ID
-): Promise<DeepRequired<OptionGroup>> => {
+): Promise<ProductOptionGroup> => {
   const optionGroupsResponse: {
-    productOptionGroup: {
-      id: string;
-      code: string;
-      translations: { languageCode: LanguageCode; name: string }[];
-      options: {
-        id: string;
-        code: string;
-        translations: { languageCode: LanguageCode; name: string }[];
-      }[];
-    };
+    productOptionGroup: Query["productOptionGroup"];
   } = await graphQLClient.request(
-    `query ProductOptionGroup($id: ID!){
-      productOptionGroup(id: $id){
-        id
-        code
-        translations {
-          languageCode
-          name
-        }
-        options{
+    /* GraphQL */ `
+      query ProductOptionGroup($id: ID!) {
+        productOptionGroup(id: $id) {
           id
           code
           translations {
             languageCode
             name
           }
+          options {
+            id
+            code
+            translations {
+              languageCode
+              name
+            }
+          }
         }
       }
-    }`,
+    `,
     { id }
   );
+
+  if (!optionGroupsResponse.productOptionGroup) {
+    throw new Error(
+      `Produkt Optionsgruppe mit der Id ${id} konnte nicht gefunden werden!`
+    );
+  }
 
   return optionGroupsResponse.productOptionGroup;
 };
@@ -1011,37 +1009,34 @@ export const createOptionGroup = async (
     code: string;
     translations: { languageCode: LanguageCode; name: string }[];
   }
-): Promise<DeepRequired<OptionGroup>> => {
+): Promise<ProductOptionGroup> => {
+  const input: CreateProductOptionGroupInput = {
+    code: optionGroup.code,
+    translations: optionGroup.translations,
+    options: [],
+  };
+
   const response: {
-    createProductOptionGroup: {
-      id: string;
-      code: string;
-      translations: { languageCode: LanguageCode; name: string }[];
-      options: {
-        id: string;
-        code: string;
-        translations: { languageCode: LanguageCode; name: string }[];
-      }[];
-    };
+    createProductOptionGroup: Mutation["createProductOptionGroup"];
   } = await graphQLClient.request(
-    `mutation CreateProductOptionGroup($input: CreateProductOptionGroupInput!){
-      createProductOptionGroup(input: $input){
-        id
-        code
-        name
-        options{
+    /* GraphQL */ `
+      mutation CreateProductOptionGroup(
+        $input: CreateProductOptionGroupInput!
+      ) {
+        createProductOptionGroup(input: $input) {
           id
-          name
           code
+          name
+          options {
+            id
+            name
+            code
+          }
         }
       }
-    }`,
+    `,
     {
-      input: {
-        code: optionGroup.code,
-        translations: optionGroup.translations,
-        options: [],
-      },
+      input,
     }
   );
 
@@ -1055,37 +1050,34 @@ export const updateOptionGroup = async (
     code: string;
     translations: { languageCode: LanguageCode; name: string }[];
   }
-): Promise<DeepRequired<OptionGroup>> => {
+): Promise<ProductOptionGroup> => {
+  const input: UpdateProductOptionGroupInput = {
+    id: optionGroup.id,
+    code: optionGroup.code,
+    translations: optionGroup.translations,
+  };
+
   const response: {
-    updateProductOptionGroup: {
-      id: string;
-      code: string;
-      translations: { languageCode: LanguageCode; name: string }[];
-      options: {
-        id: string;
-        code: string;
-        translations: { languageCode: LanguageCode; name: string }[];
-      }[];
-    };
+    updateProductOptionGroup: Mutation["updateProductOptionGroup"];
   } = await graphQLClient.request(
-    `mutation UpdateProductOptionGroup($input: UpdateProductOptionGroupInput!){
-      updateProductOptionGroup(input: $input){
-        id
-        code
-        name
-        options{
+    /* GraphQL */ `
+      mutation UpdateProductOptionGroup(
+        $input: UpdateProductOptionGroupInput!
+      ) {
+        updateProductOptionGroup(input: $input) {
           id
-          name
           code
+          name
+          options {
+            id
+            name
+            code
+          }
         }
       }
-    }`,
+    `,
     {
-      input: {
-        id: optionGroup.id,
-        code: optionGroup.code,
-        translations: optionGroup.translations,
-      },
+      input,
     }
   );
 
@@ -1098,16 +1090,21 @@ export const assignOptionGroupToProduct = async (
   optionGroupId: ID
 ) => {
   const productOptionGroupAssignmentResponse: {
-    addOptionGroupToProduct: { id: ID; optionGroups: { id: ID }[] };
+    addOptionGroupToProduct: Mutation["addOptionGroupToProduct"];
   } = await graphQLClient.request(
-    `mutation AddOptionGroupToProduct($productId: ID!, $optionGroupId: ID!){
-      addOptionGroupToProduct(productId: $productId, optionGroupId: $optionGroupId){
-        id
-        optionGroups{
+    /* GraphQL */ `
+      mutation AddOptionGroupToProduct($productId: ID!, $optionGroupId: ID!) {
+        addOptionGroupToProduct(
+          productId: $productId
+          optionGroupId: $optionGroupId
+        ) {
           id
+          optionGroups {
+            id
+          }
         }
       }
-    }`,
+    `,
     {
       productId,
       optionGroupId,
@@ -1118,19 +1115,22 @@ export const assignOptionGroupToProduct = async (
 export const createProductOptions = async (
   graphQLClient: GraphQLClient,
   optionGroupId: ID,
-  options: Option[]
-): Promise<DeepRequired<Option>[]> => {
+  options: OptionPrototype[]
+): Promise<ProductOption[]> => {
   return Promise.all(
     options.map(async (option) => {
+      const input: CreateProductOptionInput = {
+        productOptionGroupId: optionGroupId,
+        code: option.code,
+        translations: option.translations,
+      };
+
       const response: {
-        createProductOption: {
-          id: ID;
-          code: string;
-          translations: { languageCode: LanguageCode; name: string }[];
-        };
+        createProductOption: Mutation["createProductOption"];
       } = await graphQLClient.request(
-        `mutation CreateProductOption($input: CreateProductOptionInput!){
-            createProductOption(input: $input){
+        /* GraphQL */ `
+          mutation CreateProductOption($input: CreateProductOptionInput!) {
+            createProductOption(input: $input) {
               id
               code
               translations {
@@ -1138,13 +1138,10 @@ export const createProductOptions = async (
                 name
               }
             }
-          }`,
+          }
+        `,
         {
-          input: {
-            productOptionGroupId: optionGroupId,
-            code: option.code,
-            translations: option.translations,
-          },
+          input,
         }
       );
 
@@ -1155,19 +1152,22 @@ export const createProductOptions = async (
 
 export const updateProductOptions = async (
   graphQLClient: GraphQLClient,
-  options: DeepRequired<Option>[]
-): Promise<DeepRequired<Option>[]> => {
+  options: (OptionPrototype & { id: ID })[]
+): Promise<ProductOption[]> => {
   return Promise.all(
     options.map(async (option) => {
+      const input: UpdateProductOptionInput = {
+        id: option.id,
+        code: option.code,
+        translations: option.translations,
+      };
+
       const response: {
-        updateProductOption: {
-          id: ID;
-          code: string;
-          translations: { languageCode: LanguageCode; name: string }[];
-        };
+        updateProductOption: Mutation["updateProductOption"];
       } = await graphQLClient.request(
-        `mutation UpdateProductOption($input: UpdateProductOptionInput!){
-            updateProductOption(input: $input){
+        /* GraphQL */ `
+          mutation UpdateProductOption($input: UpdateProductOptionInput!) {
+            updateProductOption(input: $input) {
               id
               code
               translations {
@@ -1175,13 +1175,10 @@ export const updateProductOptions = async (
                 name
               }
             }
-          }`,
+          }
+        `,
         {
-          input: {
-            id: option.id,
-            code: option.code,
-            translations: option.translations,
-          },
+          input,
         }
       );
 
@@ -1203,34 +1200,35 @@ export const getExistingProductVariants = async (
   variantSkuToId: { [sku: string]: string };
 }> => {
   const existingVariants: {
-    product: {
-      variants: {
-        id: string;
-        sku: string;
-        options: { id: string; code: string; name: string; groupId: string }[];
-        assets: { id: ID }[];
-      }[];
-    };
+    product: Query["product"];
   } = await graphQLClient.request(
-    `query ProductVariants($id: ID!){
-      product(id: $id){
-        variants{
-          id
-          sku
-          options{
+    /* GraphQL */ `
+      query ProductVariants($id: ID!) {
+        product(id: $id) {
+          variants {
             id
-            code
-            name
-            groupId
-          }
-          assets{
-            id
+            sku
+            options {
+              id
+              code
+              name
+              groupId
+            }
+            assets {
+              id
+            }
           }
         }
       }
-    }`,
+    `,
     { id: productId }
   );
+
+  if (!existingVariants.product) {
+    throw new Error(
+      `Produkt mit der ID ${productId} konnte nicht gefunden werden!`
+    );
+  }
 
   const variantSkuToId: { [sku: string]: string } = {};
 
@@ -1252,82 +1250,107 @@ export const deleteProductVariants = async (
   variantIds: string[]
 ) => {
   const DeleteVariants = await Promise.all(
-    variantIds.map((variantId) =>
-      graphQLClient.request(
-        `mutation DeleteProductVariant($id: ID!){
-          deleteProductVariant(id: $id){
-            result
-            message
+    variantIds.map((variantId) => {
+      const response: Promise<{
+        deleteProductVariant: Mutation["deleteProductVariant"];
+      }> = graphQLClient.request(
+        /* GraphQL */ `
+          mutation DeleteProductVariant($id: ID!) {
+            deleteProductVariant(id: $id) {
+              result
+              message
+            }
           }
-        }`,
+        `,
         {
           id: variantId,
         }
-      )
-    )
+      );
+
+      return response;
+    })
   );
 };
 
 export const createProductVariants = async (
   graphQLClient: GraphQLClient,
-  variantCreations: ProductVariantCreation[]
-): Promise<{ id: string; sku: string }[]> => {
+  variantCreations: CreateProductVariantInput[]
+): Promise<ProductVariant[]> => {
   const response: {
-    createProductVariants: { id: string; sku: string }[];
+    createProductVariants: Mutation["createProductVariants"];
   } = await graphQLClient.request(
-    `mutation CreateProductVariants($input: [CreateProductVariantInput!]!){
-      createProductVariants(input: $input){
-        id
-        sku
+    /* GraphQL */ `
+      mutation CreateProductVariants($input: [CreateProductVariantInput!]!) {
+        createProductVariants(input: $input) {
+          id
+          sku
+        }
       }
-    }`,
+    `,
     {
       input: variantCreations,
     }
   );
 
-  return response.createProductVariants;
+  const variants: ProductVariant[] = [];
+
+  response.createProductVariants.forEach((v) => {
+    if (v) {
+      variants.push(v);
+    } else {
+      throw new Error(
+        `Fehler: Es konnten nicht alle Produktvarianten erstellt werden.`
+      );
+    }
+  });
+
+  return variants;
 };
 
 export const updateProductVariants = async (
   graphQLClient: GraphQLClient,
-  variantUpdates: ProductVariantUpdate[]
+  variantUpdates: UpdateProductVariantInput[]
 ) => {
   const response: {
-    updateProductVariants: { id: string; sku: string }[];
+    updateProductVariants: Mutation["updateProductVariants"];
   } = await graphQLClient.request(
-    `mutation UpdateProductVariants($input: [UpdateProductVariantInput!]!){
-      updateProductVariants(input: $input){
-        id
-        sku
+    /* GraphQL */ `
+      mutation UpdateProductVariants($input: [UpdateProductVariantInput!]!) {
+        updateProductVariants(input: $input) {
+          id
+          sku
+        }
       }
-    }`,
+    `,
     {
       input: variantUpdates,
     }
   );
+
+  return response.updateProductVariants;
 };
 
-export const updateProductVariantBulkDiscounts = async (
+export const updateBulkDiscounts = async (
   graphQLClient: GraphQLClient,
-  variantBulkDiscounts: {
-    productVariantId: string;
-    discounts: { quantity: number; price: number }[];
-  }[]
+  bulkDiscounts: BulkDiscountUpdate[]
 ) => {
-  const UpdateProductVariantsBulkDicounts = await Promise.all(
-    variantBulkDiscounts.map(({ productVariantId, discounts }) =>
-      graphQLClient.request(
-        `mutation UpdateProductVariantBulkDicounts($productVariantId: ID!, $discounts: [BulkDiscountInput!]!){
-          updateProductVariantBulkDiscounts(productVariantId: $productVariantId, discounts: $discounts)
-        }`,
-        {
-          productVariantId,
-          discounts,
-        }
-      )
-    )
+
+  const request: {
+    updateProductVariantBulkDiscounts: Mutation["updateBulkDiscounts"];
+  } = await graphQLClient.request(
+    /* GraphQL */ `
+      mutation UpdateBulkDiscounts(
+        $updates: [BulkDiscountUpdate!]!
+      ) {
+        updateBulkDiscounts(updates: $updates)
+      }
+    `,
+    {
+      updates: bulkDiscounts,
+    }
   );
+
+  return request.updateProductVariantBulkDiscounts;
 };
 
 export const updateProductCrosssells = async (
@@ -1338,18 +1361,32 @@ export const updateProductCrosssells = async (
   }[]
 ) => {
   const response = await Promise.all(
-    crosssells.map(({ productId, productIds }) =>
-      graphQLClient.request(
-        `mutation UpdateCrossSellingProducts($productId: ID!, $productIds: [ID!]!){
-          updateCrossSellingProducts(productId: $productId, productIds: $productIds)
-        }`,
+    crosssells.map(({ productId, productIds }) => {
+      const request: Promise<{
+        updateCrossSellingProducts: Mutation["updateCrossSellingProducts"];
+      }> = graphQLClient.request(
+        /* GraphQL */ `
+          mutation UpdateCrossSellingProducts(
+            $productId: ID!
+            $productIds: [ID!]!
+          ) {
+            updateCrossSellingProducts(
+              productId: $productId
+              productIds: $productIds
+            )
+          }
+        `,
         {
           productId,
           productIds,
         }
-      )
-    )
+      );
+
+      return request;
+    })
   );
+
+  return response;
 };
 
 export const updateProductUpsells = async (
@@ -1360,16 +1397,30 @@ export const updateProductUpsells = async (
   }[]
 ) => {
   const response = await Promise.all(
-    upsells.map(({ productId, productIds }) =>
-      graphQLClient.request(
-        `mutation UpdateUpSellingProducts($productId: ID!, $productIds: [ID!]!){
-          updateUpSellingProducts(productId: $productId, productIds: $productIds)
-        }`,
+    upsells.map(({ productId, productIds }) => {
+      const request: Promise<{
+        updateUpSellingProducts: Mutation["updateUpSellingProducts"];
+      }> = graphQLClient.request(
+        /* GraphQL */ `
+          mutation UpdateUpSellingProducts(
+            $productId: ID!
+            $productIds: [ID!]!
+          ) {
+            updateUpSellingProducts(
+              productId: $productId
+              productIds: $productIds
+            )
+          }
+        `,
         {
           productId,
           productIds,
         }
-      )
-    )
+      );
+
+      return request;
+    })
   );
+
+  return response;
 };

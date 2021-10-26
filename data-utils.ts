@@ -3,13 +3,12 @@ import {
   Record,
   ProductPrototype,
   ProductVariantPrototype,
-  AttributeFacet,
-  Facet,
   BulkDiscount,
   ID,
-  LanguageCode,
-  OptionGroup,
-  FacetValue,
+  Unpacked,
+  FacetPrototype,
+  FacetValuePrototype,
+  OptionGroupPrototype,
 } from "./types";
 import {
   IMPORT_OPTION_GROUPS,
@@ -20,6 +19,16 @@ import {
   CATEGORY_FACET_CODE,
   RESELLER_DISCOUNT_FACET_CODE,
 } from "./data-utils/facets";
+import {
+  CreateFacetInput,
+  CreateFacetValueInput,
+  CreateProductOptionGroupInput,
+  Facet,
+  FacetValue,
+  LanguageCode,
+  Maybe,
+  ProductOptionGroup,
+} from "./schema";
 
 export const SLUGIFY_OPTIONS = { lower: true, strict: true };
 export const SEPERATOR = "|";
@@ -60,9 +69,12 @@ const getFloatingPointValue = <T>(
 };
 
 const findItemByUnknownLocaleString = async <
-  ObjectTranslation extends { languageCode: LanguageCode; name: string },
+  ObjectTranslation extends {
+    languageCode: LanguageCode;
+    name?: Maybe<string>;
+  },
   Obj extends { code: string; translations: ObjectTranslation[] },
-  ItemTranslation extends { languageCode: LanguageCode; name: string },
+  ItemTranslation extends { languageCode: LanguageCode; name?: Maybe<string> },
   Item extends { code: string; translations: ItemTranslation[] }
 >(
   object: Obj,
@@ -77,11 +89,11 @@ const findItemByUnknownLocaleString = async <
   suggestions = suggestions.filter(
     (s) =>
       !s.translations.find((t) => t.languageCode === languageCode) ||
-      s.translations.find((t) => t.name.trim().toLowerCase() === v)
+      s.translations.find((t) => (t?.name || "").trim().toLowerCase() === v)
   );
 
   const betterSuggestions = suggestions.filter((s) =>
-    s.translations.find((t) => t.name.trim().toLowerCase() === v)
+    s.translations.find((t) => (t?.name || "").trim().toLowerCase() === v)
   );
 
   const matches =
@@ -90,7 +102,9 @@ const findItemByUnknownLocaleString = async <
         ? betterSuggestions
         : suggestions
       : items.filter((item) =>
-          item.translations.find((t) => v === t.name.trim().toLowerCase())
+          item.translations.find(
+            (t) => v === (t?.name || "").trim().toLowerCase()
+          )
         );
 
   const untranslated = items.filter(
@@ -123,7 +137,10 @@ Wählen Sie die entsprechende Option aus.`,
   }
 };
 
-export const tableToProducts = async (records: Record[], facets: Facet[]) => {
+export const tableToProducts = async (
+  records: Record[],
+  facets: FacetPrototype[]
+) => {
   const products: (ProductPrototype & {
     translationId?: ID;
     initialVariantSku?: ID;
@@ -143,7 +160,7 @@ export const tableToProducts = async (records: Record[], facets: Facet[]) => {
         )}`
       );
     }
-    const id: ID = record[column];
+    const id: ID = record[column].toString();
 
     column = IMPORT_ATTRIBUTE_COLUMNS.parentId.find(inRecord);
     if (!column) {
@@ -181,15 +198,15 @@ export const tableToProducts = async (records: Record[], facets: Facet[]) => {
     let languageCode: LanguageCode;
     switch (languageField) {
       case "fr":
-        languageCode = "fr";
+        languageCode = LanguageCode.Fr;
         break;
       case "de":
       default:
-        languageCode = "de";
+        languageCode = LanguageCode.De;
     }
 
     column = IMPORT_ATTRIBUTE_COLUMNS.translationId.find(inRecord);
-    const translationId = column && record[column];
+    const translationId = column && record[column].toString();
 
     column = IMPORT_ATTRIBUTE_COLUMNS.name.find(inRecord);
     const nameField = column && record[column].toString().trim();
@@ -242,6 +259,8 @@ export const tableToProducts = async (records: Record[], facets: Facet[]) => {
         `Spalte ${column} auf Zeile ${index} enthält einen negativen Preis!`
       );
     }
+
+    price = Math.round(price * 100) / 100;
 
     column = IMPORT_ATTRIBUTE_COLUMNS.minimumOrderQuantity.find(inRecord);
     const minimumOrderQuantity: number = getIntegerValue(
@@ -341,9 +360,8 @@ export const tableToProducts = async (records: Record[], facets: Facet[]) => {
     //modify some option group columns before processing them alltogether
 
     const unitColumn = IMPORT_ATTRIBUTE_COLUMNS.unit.find(inRecord);
-    const quantityPerUnitColumn = IMPORT_ATTRIBUTE_COLUMNS.quantityPerUnit.find(
-      inRecord
-    );
+    const quantityPerUnitColumn =
+      IMPORT_ATTRIBUTE_COLUMNS.quantityPerUnit.find(inRecord);
 
     if (quantityPerUnitColumn && unitColumn) {
       const unit = record[unitColumn];
@@ -386,7 +404,7 @@ export const tableToProducts = async (records: Record[], facets: Facet[]) => {
         bulkDiscounts = JSON.parse(bulkDiscountsField).map(
           ({ qty, ppu }: { qty: string | number; ppu: string | number }) => ({
             quantity: parseInt(qty.toString()),
-            price: Math.floor(parseFloat(ppu.toString()) * 100),
+            price: Math.round(parseFloat(ppu.toString()) * 100),
           })
         );
       } catch (e) {
@@ -409,7 +427,7 @@ export const tableToProducts = async (records: Record[], facets: Facet[]) => {
 
           if (pricePerUnit > 0 && quantity > 0) {
             bulkDiscounts.push({
-              price: pricePerUnit * 100,
+              price: Math.round(pricePerUnit * 100),
               quantity: quantity,
             });
           }
@@ -441,7 +459,7 @@ export const tableToProducts = async (records: Record[], facets: Facet[]) => {
 
         products.push({
           previousIds: [id],
-          translationId,
+          translationId: translationId?.toString(),
           sku,
           translations: [
             {
@@ -469,7 +487,7 @@ export const tableToProducts = async (records: Record[], facets: Facet[]) => {
     }
 
     //import option groups
-    const groups: OptionGroup[] = [];
+    const groups: OptionGroupPrototype[] = [];
 
     IMPORT_OPTION_GROUPS.forEach((attribute) => {
       const columnKey = attribute.columnKeys.find(inRecord);
@@ -496,12 +514,12 @@ export const tableToProducts = async (records: Record[], facets: Facet[]) => {
 
     const facetValueCodes: string[] = [];
 
-    //add category facets
+    //add category facets values
     for (const c of categories) {
       const f = facets.find((f) => f.code === CATEGORY_FACET_CODE);
 
       if (f) {
-        let suggestions: FacetValue[] = [];
+        let suggestions: FacetValuePrototype[] = [];
         if (translationId) {
           const existingVariant = variants.find(
             (v) => v.translationId === translationId
@@ -546,7 +564,7 @@ export const tableToProducts = async (records: Record[], facets: Facet[]) => {
       const f = facets.find((f) => f.code === RESELLER_DISCOUNT_FACET_CODE);
 
       if (f) {
-        let suggestions: FacetValue[] = [];
+        let suggestions: FacetValuePrototype[] = [];
         if (translationId) {
           const existingVariant = variants.find(
             (v) => v.translationId === translationId
