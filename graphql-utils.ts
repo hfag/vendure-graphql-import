@@ -1,15 +1,3 @@
-import fs from "fs";
-import fetch from "node-fetch";
-import FormData from "form-data";
-import slugify from "slugify";
-import { GraphQLClient, rawRequest } from "graphql-request";
-import { SLUGIFY_OPTIONS } from "./data-utils";
-import {
-  downloadFiles,
-  cleanDownloads,
-  getFilenameFromUrl,
-  isValidUrl,
-} from "./utils";
 import {
   Asset,
   BulkDiscountUpdate,
@@ -47,6 +35,18 @@ import {
   OptionPrototype,
   ProductPrototype,
 } from "./types";
+import { GraphQLClient, rawRequest } from "graphql-request";
+import { SLUGIFY_OPTIONS } from "./data-utils";
+import {
+  cleanDownloads,
+  downloadFiles,
+  getFilenameFromUrl,
+  isValidUrl,
+} from "./utils";
+import FormData from "form-data";
+import fetch from "node-fetch";
+import fs from "fs";
+import slugify from "slugify";
 
 export const uploadFilesToGraphql = async (
   endpoint: string,
@@ -272,6 +272,69 @@ export const createCategoryCollection = async (
   );
 
   return response.createCollection.id;
+};
+
+export const getAllProductVariants = async (
+  graphQLClient: GraphQLClient,
+  take: number
+) => {
+  let items: ProductVariant[] = [];
+
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const response: {
+      productVariants: Query["productVariants"];
+    } = await graphQLClient.request(/* GraphQL */ `
+      query {
+        productVariants(options: { skip: ${items.length}, take: ${take} }) {
+          totalItems
+          items {
+            id
+            sku
+            name
+            priceWithTax
+            options {
+              code
+              name
+              group {
+                code
+                name
+              }
+            }
+            facetValues {
+              code
+              name
+              facet {
+                code
+                name
+              }
+            }
+            bulkDiscounts {
+              quantity
+              price
+            }
+            product {
+              collections {
+                name
+              }
+              customFields {
+                productRecommendationsEnabled
+                groupKey
+                ordering
+              }
+            }
+          }
+        }
+      }
+    `);
+
+    items = items.concat(response.productVariants.items);
+
+    if (items.length >= response.productVariants.totalItems) {
+      break;
+    }
+  }
+  return items;
 };
 
 export const getExistingProducts = async (
@@ -705,7 +768,7 @@ export const findOrCreateFacetValues = async (
 ) => {
   const existing = await getFacetValues(graphQLClient, facetId);
 
-  let facetIds: ID[] = [];
+  const facetIds: ID[] = [];
   const facetsToCreate: FacetValue[] = [];
 
   values.forEach((value) => {
@@ -1334,14 +1397,11 @@ export const updateBulkDiscounts = async (
   graphQLClient: GraphQLClient,
   bulkDiscounts: BulkDiscountUpdate[]
 ) => {
-
   const request: {
     updateProductVariantBulkDiscounts: Mutation["updateBulkDiscounts"];
   } = await graphQLClient.request(
     /* GraphQL */ `
-      mutation UpdateBulkDiscounts(
-        $updates: [BulkDiscountUpdate!]!
-      ) {
+      mutation UpdateBulkDiscounts($updates: [BulkDiscountUpdate!]!) {
         updateBulkDiscounts(updates: $updates)
       }
     `,

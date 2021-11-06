@@ -227,7 +227,7 @@ async function main() {
     cliProgress.Presets.shades_classic
   );
 
-  //loadingBar.start(products.length, 0);
+  loadingBar.start(products.length, 0);
 
   for (const p of products) {
     try {
